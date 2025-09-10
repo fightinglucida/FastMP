@@ -569,7 +569,7 @@ ivation_time
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 email: lishuo1607@gmail.com
-key： eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJLOWVTRjF6WlNjZS1uS0I3V2RSTFFBIiwiaWF0IjoxNzU3NTA2OTY3LCJleHAiOjE3NTc1OTMzNjd9.4L4Fgp0XyR6fjjZkgPglTjIDeLEfsvJ78864bdOSJEE
+key： eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJLOWVTRjF6WlNjZS1uS0I3V2RSTFFBIiwiaWF0IjoxNzU3NTExODg3LCJleHAiOjE3NTc1OTgyODd9.dXmE1qfTNnYAXCayzH1ENktnwfmVuOHdVjPQIOR0w18
 
 
 email: lucida1607@gmail.com
@@ -581,3 +581,296 @@ key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkaWpPN1AwZlRuYWlFUmxwSm1qUn
     {"id":"aa6abb24-7e0b-408f-9e6c-b4671a9400da","activation_code":"392b1f461828d99dcc9ab0c13d6827c1","valid_days":3,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:28:01.065282+00:00","update_time":"2025-09-10T12:28:01.065298+00:00"},{"id":"b540c76e-3f67-4ee2-82d7-9624347126d2","activation_code":"649e0faa610e3262295bac2920ddbec9","valid_days":3,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:28:01.065564+00:00","update_time":"2025-09-10T12:28:01.065573+00:00"},{"id":"f45e8a80-d19d-4388-8616-ae4dd4d27c65","activation_code":"e714f3431234bf72e6c597627dc3e1dc","valid_days":3,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:28:01.065675+00:00","update_time":"2025-09-10T12:28:01.065682+00:00"},{"id":"512ed8ff-521e-4ba8-8084-e8fd2b3339e8","activation_code":"9b018aecfbb4f072c1d67a63f079180f","valid_days":3,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:28:01.065762+00:00","update_time":"2025-09-10T12:28:01.065768+00:00"},{"id":"37b3096a-5d90-41e9-bfa5-1e646ed5e6a9","activation_code":"a9a85a9f9684313ebc9f3743f17c4aa8","valid_days":3,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:28:01.065833+00:00","update_time":"2025-09-10T12:28:01.065839+00:00"}]
 
 }
+
+
+---
+
+> 创建 /activation/list 和 /activation/revoke 管理端接口
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 进展声明：我已实现管理员端的两个接口：                                                                               │
+│                                                                                                                      │
+│  • GET /activation/list：分页查询激活码（可按状态/邮箱过滤）                                                         │
+│  • POST /activation/revoke：撤销指定激活码                                                                           │
+│                                                                                                                      │
+│ 它们已接入权限检查（仅 admin 可用）。下面给你测试方法与注意事项。                                                    │
+│                                                                                                                      │
+│ 如何测试这两个接口 前置条件                                                                                          │
+│                                                                                                                      │
+│  • 确保服务已重启一次，让 activation_codes 表创建完成（应用启动时会自动建表）。                                      │
+│  • 准备一个管理员账号的 token。如果你还没有管理员账号，可在数据库中把某个账号提权：                                  │
+│     • UPDATE accounts SET role='admin' WHERE email='admin@example.com';                                              │
+│     • 然后用该邮箱密码登录，得到 ADMIN_TOKEN。                                                                       │
+│                                                                                                                      │
+│  1 生成激活码（回顾）                                                                                                │
+│                                                                                                                      │
+│  • 使用管理员 token 调用（例如生成 3 个，每个 30 天）： curl -X POST "http://localhost:8000/activation/generate"     │
+│    -H "Content-Type: application/json"                                                                               │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│    -d "{"valid_days":30,"count":3}"                                                                                  │
+│                                                                                                                      │
+│  2 列出激活码（新接口）                                                                                              │
+│                                                                                                                      │
+│  • 不带过滤（分页默认 page=1,size=50）： curl -H "Authorization: Bearer <ADMIN_TOKEN>"                               │
+│    "http://localhost:8000/activation/list"                                                                           │
+│  • 按状态过滤：status 可取 pending/active/expired/revoked curl -H "Authorization: Bearer <ADMIN_TOKEN>"              │
+│    "http://localhost:8000/activation/list?status=pending&page=1&size=20"                                             │
+│  • 按用户邮箱过滤（查看某用户已使用的码）： curl -H "Authorization: Bearer <ADMIN_TOKEN>"                            │
+│    "http://localhost:8000/activation/list?email=user1@example.com"                                                   │
+│                                                                                                                      │
+│ 返回示例 { "items": [ { "id": "f2a4...-uuid", "activation_code": "32位hex", "valid_days": 30, "activation_status":   │
+│ "pending", "user_email": null, "expiry_date": null, "activation_time": null, "create_time":                          │
+│ "2025-09-10T08:30:00+00:00", "update_time": "2025-09-10T08:30:00+00:00" } ], "total": 3, "page": 1, "size": 50 }     │
+│                                                                                                                      │
+│  3 撤销激活码（新接口）                                                                                              │
+│                                                                                                                      │
+│  • 由管理员撤销一个激活码（无论是否使用过；已激活的码撤销后仅表示管理层标记，不会回滚已激活账户状态） curl -X POST   │
+│    "http://localhost:8000/activation/revoke"                                                                         │
+│    -H "Content-Type: application/json"                                                                               │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│    -d "{"activation_code":"<32位激活码>"}"                                                                           │
+│                                                                                                                      │
+│ 返回是被更新后的激活码记录（activation_status=revoked）。                                                            │
+│                                                                                                                      │
+│ 可配合已有接口进行完整流程                                                                                           │
+│                                                                                                                      │
+│  • 生成（/activation/generate，管理员）                                                                              │
+│  • 列出（/activation/list，管理员）                                                                                  │
+│  • 普通用户注册/登录（/auth/register、/auth/login）                                                                  │
+│  • 激活（/activation/activate，普通用户）                                                                            │
+│  • 再次列出查看状态变化                                                                                              │
+│  • 撤销（/activation/revoke，管理员）                                                                                │
+│                                                                                                                      │
+│ 注意事项与说明                                                                                                       │
+│                                                                                                                      │
+│  • 权限控制：/activation/list 与 /activation/revoke 都需要管理员 token；否则 403。                                   │
+│  • 状态枚举：pending（未激活）/ active（已激活）/ revoked（管理员撤销）/ expired（已过期）                           │
+│     • 当前实现中，激活码“过期”并不会自动变更为 expired；我们在账户层检查 expired_time 判定用户是否过期（依赖         │
+│       require_active_user）。如需对 activation_codes                                                                 │
+│       也进行到期自动标记，我可以加一个定时任务或调用时的到期评估逻辑。                                               │
+│  • 时间字段：activation_codes 使用 text 存储 ISO 时间（按你的要求）；accounts.expired_time 使用带时区的              │
+│    TIMESTAMP，供业务逻辑校验。                                                                                       │
+│  • Swagger 测试：这两个接口都需要在“Authorize”栏填入管理员 Bearer token。                                            │
+│                                                                                                                      │
+│ 下一步建议                                                                                                           │
+│                                                                                                                      │
+│  • 业务一致性：                                                                                                      │
+│     • 激活码已激活后撤销时是否需要影响账户状态？如果需要，我们可以在 revoke 时回滚账户的                             │
+│       activation_status/expired_time（一般不建议自动回滚，建议单独接口处理账户禁用）。                               │
+│     • 增加“导出激活码列表为 CSV”的接口，便于运营发放。                                                               │
+│  • 全站认证与激活保护：                                                                                              │
+│     • 除 /auth 与 /health                                                                                            │
+│       外，统一加“认证+激活状态校验”（中间件或全局依赖）以符合你的“先认证+激活才能调用所有接口”的硬要求。             │
+│  • 数据迁移：                                                                                                        │
+│     • 初始化 Alembic 并生成 migration，避免生产靠启动建表（尤其涉及枚举类型的演进）。                                │
+│  • 文档与跟踪：                                                                                                      │
+│     • 我可以整理一份“激活码流程与接口说明”的文档，或创建 Jira 任务跟踪“全站认证拦截/激活码导出/自动过期处理”。       │
+│                                                                                                                      │
+│ 我可以继续帮你：                                                                                                     │
+│                                                                                                                      │
+│  • A) 加全站“认证+激活”拦截（除 /auth、/health）                                                                     │
+│  • B) 为激活码增加“导出 CSV”与“自动过期标记”逻辑                                                                     │
+│  • C) 初始化 Alembic 迁移并生成 accounts/activation_codes 的首个迁移                                                 │
+│  • D) 创建 PR 并撰写变更说明，或生成 Confluence 页面记录这套设计                                                     │
+│                                                                                                                      │
+│ 你希望我先做哪一个？                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+2个8天的激活码
+
+{"codes":[{"id":"e8fc1524-51a2-40d3-8867-bcb969789554","activation_code":"3c94cc5a77abce1891584d9cd4a46249","valid_days":8,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:49:41.711293+00:00","update_time":"2025-09-10T12:49:41.711330+00:00"},{"id":"2f2fc871-e22c-4257-81ab-07c94e5c8889","activation_code":"37946c671a570a9f2c184be29d479dc7","valid_days":8,"activation_status":"pending","user_email":null,"expiry_date":null,"activation_time":null,"create_time":"2025-09-10T12:49:41.711878+00:00","update_time":"2025-09-10T12:49:41.711901+00:00"}]}
+
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 全站“认证+激活”拦截已经完成并优化：                                                                                  │
+│                                                                                                                      │
+│  • 中间件会对除 /auth/*、/health、/docs、/openapi.json、/redoc 之外的所有路径强制要求 Bearer JWT。                   │
+│  • 对“未激活用户”，仅允许调用 /activation/activate 来完成激活，其它路径会返回 403。                                  │
+│  • 已激活用户且未过期，可正常访问其它接口。                                                                          │
+│                                                                                                                      │
+│ 如何验证                                                                                                             │
+│                                                                                                                      │
+│  1 未登录访问任意业务接口                                                                                            │
+│                                                                                                                      │
+│  • 例如访问 /auth/me 或 /activation/list（需要管理员）                                                               │
+│  • 期望返回 401 Not authenticated                                                                                    │
+│                                                                                                                      │
+│  2 普通用户登录但未激活                                                                                              │
+│                                                                                                                      │
+│  • 调用 /auth/login 获取 token                                                                                       │
+│  • 使用该 token 调用 /auth/me（允许，因中间件仅控制非白名单路径；/auth/me                                            │
+│    在我们的实现里也走中间件，但我们只检查是否激活，注意：当前 /auth/me 也会被强制激活校验。如果你希望未激活也能看    │
+│    /auth/me，我可以把 /auth/me 加入白名单）                                                                          │
+│  • 使用该 token 调用任意非白名单接口（如未来的业务接口）应 403 Account not activated                                 │
+│  • 使用该 token 调用 /activation/activate 成功，返回激活结果                                                         │
+│                                                                                                                      │
+│  3 激活后再次访问                                                                                                    │
+│                                                                                                                      │
+│  • 激活成功后，使用相同 token 调用其它接口不再被拦截（直到 token 过期）                                              │
+│                                                                                                                      │
+│  4 管理员能力验证                                                                                                    │
+│                                                                                                                      │
+│  • 将某个账号 role 更新为 admin                                                                                      │
+│  • 登录拿到 ADMIN_TOKEN                                                                                              │
+│  • 调用 /activation/generate、/activation/list、/activation/revoke 均成功                                            │
+│                                                                                                                      │
+│ 常见问题与说明                                                                                                       │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • Swagger 测试：你需要先用 /auth/login 获取 token，点右上角 Authorize，填入 Bearer  后再调其它接口。                │
+│  • /auth/me 是否需要白名单：当前中间件会对 /auth/me 也进行激活校验。如果你希望未激活用户也能看到自己的信息，我可以把 │
+│    /auth/me 加入白名单或在中间件中放行该路径。                                                                       │
+│  • 激活码“过期”状态：目前我们只在账户访问时依据 accounts.expired_time 拦截访问；activation_codes 表的 expired        │
+│    状态不会自动更新。如果需要在 /activation/list 中动态标识/过滤过期码，我可以在 list                                │
+│    时做到期判定或加定时任务更新状态。                                                                                │
+│                                                                                                                      │
+│ 下一步建议                                                                                                           │
+│                                                                                                                      │
+│  • 初始化 Alembic 迁移，固化 accounts 和 activation_codes 结构与枚举，利于生产升级。                                 │
+│  • 增加“导出激活码为 CSV”的接口，方便批量发放。                                                                      │
+│  • 添加集成测试：未认证/未激活/激活成功的访问路径验证。                                                              │
+│  • 文档化“全站拦截策略”与“激活流程”。                                                                                │
+│                                                                                                                      │
+│ 需要我现在：                                                                                                         │
+│                                                                                                                      │
+│  • 将 /auth/me 加入白名单，允许未激活用户查看自身信息？                                                              │
+│  • 生成 Alembic 初始迁移脚本并提供升级/回滚命令？                                                                    │
+│  • 添加“激活码导出 CSV”接口并给出导出示例？                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 添加导出 CSV 的接口与样例
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 已添加导出 CSV 接口：                                                                                                │
+│                                                                                                                      │
+│  • GET /activation/export                                                                                            │
+│     • 权限：管理员                                                                                                   │
+│     • 支持过滤参数：                                                                                                 │
+│        • status: pending/active/expired/revoked（可选）                                                              │
+│        • email: 指定用户邮箱（可选）                                                                                 │
+│     • 返回：CSV 文件下载（流式输出，字段包含                                                                         │
+│       id、activation_code、user_email、activation_status、valid_days、create_time、update_time、activation_time、exp │
+│       iry_date）                                                                                                     │
+│                                                                                                                      │
+│ 使用示例                                                                                                             │
+│                                                                                                                      │
+│  • 导出全部激活码： curl -H "Authorization: Bearer <ADMIN_TOKEN>" -L "http://localhost:8000/activation/export" -o    │
+│    activation_codes.csv                                                                                              │
+│  • 导出未激活激活码： curl -H "Authorization: Bearer <ADMIN_TOKEN>" -L                                               │
+│    "http://localhost:8000/activation/export?status=pending" -o pending_codes.csv                                     │
+│  • 导出某用户的激活记录： curl -H "Authorization: Bearer <ADMIN_TOKEN>" -L                                           │
+│    "http://localhost:8000/activation/export?email=user1@example.com" -o user1_codes.csv                              │
+│                                                                                                                      │
+│ 注意                                                                                                                 │
+│                                                                                                                      │
+│  • 文件名默认 activation_codes.csv，可根据 URL 参数自定义文件名需求我也能支持。                                      │
+│  • 目前 activation_codes 的 expired 状态不会自动维护。如果希望在导出时动态标记已过期（根据 expiry_date               │
+│    与当前时间判断）我可以在导出逻辑中加入判断，或单独提供一个“刷新状态”的管理接口。                                  │
+│                                                                                                                      │
+│ 下一步建议                                                                                                           │
+│                                                                                                                      │
+│  • 增加“导出时脱敏开关”：可选择隐藏激活码字段，仅导出统计维度。                                                      │
+│  • 增加“批量作废/批量导出”按勾选 ID 的接口。                                                                         │
+│  • 引入 Alembic 迁移管理数据库结构。                                                                                 │
+│  • 记录管理员操作日志（生成/导出/撤销）以便审计。                                                                    │
+│                                                                                                                      │
+│ 是否需要我：                                                                                                         │
+│                                                                                                                      │
+│  • 在导出时动态计算并标注“已过期/未过期”（不改变数据库，只改变导出列）？                                             │
+│  • 初始 Alembic 迁移并生成 migration？                                                                               │
+│  • 创建一个 PR 并整理接口文档到 Confluence？                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+---
+> 接口的白名单需要优化：即管理员用户不需要激活码，就可以调用全部API接口，普通用户调用接口才需要登录+激活
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 已按你的要求优化全局白名单与校验逻辑：                                                                               │
+│                                                                                                                      │
+│  • 管理员用户（role=admin）：只要登录成功，自动免激活校验，可调用所有 API。                                          │
+│  • 普通用户（role=user）：登录后，只有 /activation/activate 和 /auth/me                                              │
+│    可以在未激活时访问；其他路径需已激活且未过期。                                                                    │
+│  • 完全白名单（无需登录）：/health、/docs、/openapi.json、/redoc、/docs/oauth2-redirect、/auth/login、/auth/register │
+│                                                                                                                      │
+│ 验证建议                                                                                                             │
+│                                                                                                                      │
+│  1 管理员                                                                                                            │
+│                                                                                                                      │
+│  • 将某账号置为 admin 并登录： UPDATE accounts SET role='admin' WHERE email='admin@example.com';                     │
+│  • 用 ADMIN_TOKEN 访问 /activation/list、/activation/generate、/activation/export 等接口，无需激活，均应 200。       │
+│                                                                                                                      │
+│  2 普通用户（未激活）                                                                                                │
+│                                                                                                                      │
+│  • 登录后访问 /auth/me：应 200                                                                                       │
+│  • 访问 /activation/activate：可用（填入激活码）                                                                     │
+│  • 访问其他受保护接口：应 403 Account not activated                                                                  │
+│                                                                                                                      │
+│  3 普通用户（已激活）                                                                                                │
+│                                                                                                                      │
+│  • 激活成功后访问任意业务接口：应 200                                                                                │
+│  • 当 expired_time 到期后：应 403 Activation expired                                                                 │
+│                                                                                                                      │
+│ 接下来我可以帮你：                                                                                                   │
+│                                                                                                                      │
+│  • 初始化 Alembic 迁移（accounts/activation_codes），便于持续升级                                                    │
+│  • 增加日志审计（生成/撤销/导出/激活操作记录）                                                                       │
+│  • 在 README/Confluence 中记录“全站认证与白名单策略”、激活流程和接口示例                                             │
+│  • 创建一个 PR 整合本轮改动                                                                                          │
+│                                                                                                                      │
+│ 要我现在为你生成 Alembic 初始迁移并提供升级/回滚命令，还是先补充文档和测试用例？                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 现在请操作，初始化 Alembic 迁移（accounts/activation_codes），便于持续升级
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Alembic 已初始化并加入首个迁移脚本，覆盖 accounts 与 activation_codes 两张表（包含 PostgreSQL                        │
+│ 枚举类型）。你可以马上在本地或服务器上运行迁移。                                                                     │
+│                                                                                                                      │
+│ 已添加/修改的文件                                                                                                    │
+│                                                                                                                      │
+│  • alembic.ini: Alembic 配置（脚本路径 alembic，日志配置）                                                           │
+│  • alembic/env.py: 读取 app.settings 的 DATABASE_URL，并自动引入 Base.metadata 供自动比对与迁移                      │
+│  • alembic/versions/0001_initial_accounts_activation_codes.py: 初始迁移，创建                                        │
+│    accounts、activation_codes、索引与枚举类型                                                                        │
+│  • requirements.txt: 新增 alembic 依赖                                                                               │
+│                                                                                                                      │
+│ 在 Ubuntu/Windows 上运行迁移                                                                                         │
+│                                                                                                                      │
+│  1 安装依赖                                                                                                          │
+│                                                                                                                      │
+│  • pip install -r requirements.txt                                                                                   │
+│                                                                                                                      │
+│  2 配置数据库连接                                                                                                    │
+│                                                                                                                      │
+│  • 确保 .env 中 DATABASE_URL 指向你的 PostgreSQL：                                                                   │
+│    DATABASE_URL=postgresql+psycopg://wechat_user:你的密码@localhost:5432/wechat_collector                            │
+│                                                                                                                      │
+│  3 执行迁移                                                                                                          │
+│                                                                                                                      │
+│  • 生成表（或同步到该版本）： alembic upgrade head                                                                   │
+│  • 回滚（示例，回到无表状态）： alembic downgrade base                                                               │
+│  • 查看当前版本： alembic current                                                                                    │
+│  • 查看历史： alembic history                                                                                        │
+│                                                                                                                      │
+│ 与应用自动建表的关系                                                                                                 │
+│                                                                                                                      │
+│  • 建议在生产禁用自动建表，仅使用 Alembic 管理。                                                                     │
+│  • 目前 app/main.py 在启动时仍会 Base.metadata.create_all(...)。当你正式采用 Alembic                                 │
+│    后，可以去掉这一段，避免同一环境下“启动自动建表”和“迁移脚本”同时操作。                                            │
+│  • 我可以帮你移除自动建表逻辑，并将 README_FASTAPI.md 和 README 中加入“使用 Alembic”的说明。                         │
+│                                                                                                                      │
+│ 后续开发流程建议                                                                                                     │
+│                                                                                                                      │
+│  • 当模型有变化时：                                                                                                  │
+│     • 本地跑：alembic revision --autogenerate -m "describe change"                                                   │
+│     • 人工审阅生成的迁移脚本（枚举类型变更注意手工处理）                                                             │
+│     • 执行：alembic upgrade head                                                                                     │
+│  • PostgreSQL 枚举变更建议手工编写升级/降级 SQL，以免 autogenerate 产生不完全的操作。                                │
+│                                                                                                                      │
+│ 是否需要我现在：                                                                                                     │
+│                                                                                                                      │
+│  • 移除启动时自动建表逻辑，完全切换到 Alembic？                                                                      │
+│  • 生成一个第二个迁移示例（比如给 activation_codes 增加一个备注列），便于你参考工作流？                              │
+│  • 更新 README，写入“迁移指引与常见问题”？                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+

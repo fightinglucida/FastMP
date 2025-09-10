@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
 from app.models.account import Account, UserRole, ActivationStatus
+from app.models.activation_code import ActivationCode
 from app.schemas.activation import (
     GenerateCodesRequest,
     GenerateCodesResponse,
@@ -54,6 +57,66 @@ def revoke_code(payload: RevokeRequest, db: Session = Depends(get_db), _: Accoun
         return ActivationCodeOut.model_validate(ac)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/export", response_class=StreamingResponse)
+def export_codes(
+    db: Session = Depends(get_db),
+    _: Account = Depends(require_admin_user),
+    status: ActivationStatus | None = Query(default=None),
+    email: str | None = Query(default=None),
+):
+    # Stream CSV with header
+    from io import StringIO
+    import csv
+
+    # Query all matched codes without pagination
+    stmt = select(ActivationCode)
+    if status is not None:
+        stmt = stmt.where(ActivationCode.activation_status == status)
+    if email is not None:
+        stmt = stmt.where(ActivationCode.user_email == email)
+    stmt = stmt.order_by(ActivationCode.create_time.desc())
+
+    rows = db.scalars(stmt).all()
+
+    def iter_csv():
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+        # header
+        writer.writerow([
+            "id",
+            "activation_code",
+            "user_email",
+            "activation_status",
+            "valid_days",
+            "create_time",
+            "update_time",
+            "activation_time",
+            "expiry_date",
+        ])
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+        # rows
+        for r in rows:
+            writer.writerow([
+                r.id,
+                r.activation_code,
+                r.user_email or "",
+                r.activation_status.value,
+                r.valid_days,
+                r.create_time,
+                r.update_time,
+                r.activation_time or "",
+                r.expiry_date or "",
+            ])
+            yield buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+
+    headers = {"Content-Disposition": "attachment; filename=activation_codes.csv"}
+    return StreamingResponse(iter_csv(), media_type="text/csv", headers=headers)
 
 
 @router.post("/activate", response_model=ActivateResponse)
