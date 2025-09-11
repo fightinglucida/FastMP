@@ -5,8 +5,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_current_user
-from app.models.account import Account, UserRole, ActivationStatus
+from app.api.deps import get_db, get_current_user, require_admin_user
+from app.models.account import Account, ActivationStatus
 from app.models.activation_code import ActivationCode
 from app.schemas.activation import (
     GenerateCodesRequest,
@@ -21,11 +21,6 @@ from app.services.activation import ActivationService
 
 router = APIRouter(prefix="/activation", tags=["activation"]) 
 
-
-def require_admin_user(current_user: Account = Depends(get_current_user)) -> Account:
-    if current_user.role != UserRole.admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
-    return current_user
 
 
 @router.post("/generate", response_model=GenerateCodesResponse)

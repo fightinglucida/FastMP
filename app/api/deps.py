@@ -60,3 +60,9 @@ def require_active_user(current_user: Account = Depends(get_current_user)) -> Ac
     if current_user.expired_time is not None and current_user.expired_time <= datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Activation expired")
     return current_user
+
+
+def require_admin_user(current_user: Account = Depends(get_current_user)) -> Account:
+    if current_user.role.name != "admin" and getattr(current_user.role, "value", None) != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+    return current_user

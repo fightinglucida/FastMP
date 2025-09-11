@@ -1,3 +1,14 @@
+## 新增：公众号登录与多 Cookie 管理接口
+
+- 新增数据表 cookies（id, token, owner_email, created_time, expire_time, name, avatar_url, avatar, local, is_current）。
+- 新增 API 路由 /cookie：
+  - GET /cookie/get：开始微信扫码登录流程，返回二维码（base64，可配置），扫码确认后保存 cookie 到 /static/cookies/<token>/ 下（包含 cookie.json、gzhcookies.cookie、avatar.jpg），并将摘要写入数据库，且将该条记录设为当前 is_current。
+  - POST /cookie/change：切换当前使用的 cookie（同一账号可保存多个 cookie）。
+  - POST /cookie/delete：删除指定 cookie（会同时删除本地文件夹）。
+  - GET /cookie/list：列出当前账号下的有效 cookie（未过期，按创建时间倒序）。
+
+权限说明：以上接口需要已登录且处于激活有效期内（管理员与普通用户均可）。
+
 # FastAPI 基础框架
 
 本目录提供一个最小可运行的 FastAPI 基础框架，包含：
@@ -874,3 +885,634 @@ key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkaWpPN1AwZlRuYWlFUmxwSm1qUn
 │  • 更新 README，写入“迁移指引与常见问题”？                                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 进度说明：我已为“管理员用户”新增了用户表和激活码表的增删查改管理接口，并实现了你要求的联动逻辑：                     │
+│                                                                                                                      │
+│  • 删除用户：若该用户已关联激活码（activation_codes.user_email == 该用户邮箱），会同步删除这些激活码；               │
+│  • 删除激活码：若该激活码已关联用户，会同步清除用户表中的 activation_code，重置 activation_status 为 pending，并清空 │
+│    expired_time。                                                                                                    │
+│                                                                                                                      │
+│ 新增内容概览                                                                                                         │
+│                                                                                                                      │
+│  • 路由                                                                                                              │
+│     • /admin/users（用户管理）                                                                                       │
+│        • GET /admin/users: 分页查询（可过滤 email、role、activation_status）                                         │
+│        • GET /admin/users/{user_id}: 查询单个用户                                                                    │
+│        • POST /admin/users: 创建用户（管理员可直接创建任意角色）                                                     │
+│        • PUT /admin/users/{user_id}: 更新用户（密码、角色、激活状态、有效期）                                        │
+│        • DELETE /admin/users/{user_id}: 删除用户（会联动删除其关联激活码）                                           │
+│     • /admin/activation（激活码管理）                                                                                │
+│        • GET /admin/activation/{code}: 查询激活码                                                                    │
+│        • PUT /admin/activation/{code}: 更新激活码的 valid_days 或状态（pending/active/expired/revoked）              │
+│        • DELETE /admin/activation/{code}: 删除激活码（会联动重置用户的激活字段）                                     │
+│  • 权限                                                                                                              │
+│     • 所有 /admin/* 接口仅管理员可用（已接入 require_admin_user 依赖）                                               │
+│     • 全局中间件也已支持管理员“免激活校验”（只需登录）                                                               │
+│                                                                                                                      │
+│ 接口数据模型                                                                                                         │
+│                                                                                                                      │
+│  • 用户（AccountOut）                                                                                                │
+│     • id, email, role, activation_status, expired_time                                                               │
+│  • 列表（AdminUserListResponse）                                                                                     │
+│     • items: AccountOut[]                                                                                            │
+│     • total, page, size                                                                                              │
+│  • 更新用户（AdminUserUpdate）                                                                                       │
+│     • password, role, activation_status, expired_time                                                                │
+│  • 更新激活码（AdminActivationCodeUpdate）                                                                           │
+│     • valid_days, status                                                                                             │
+│                                                                                                                      │
+│ 联动逻辑细节                                                                                                         │
+│                                                                                                                      │
+│  • 删除用户（/admin/users/{user_id}, DELETE）                                                                        │
+│     • 删除该用户行                                                                                                   │
+│     • 同步删除 activation_codes 表中 user_email == 用户邮箱 的所有激活码                                             │
+│  • 删除激活码（/admin/activation/{code}, DELETE）                                                                    │
+│     • 删除该激活码                                                                                                   │
+│     • 若该激活码有 user_email 且该用户的 accounts.activation_code == 此 code：                                       │
+│        • 清空该用户 activation_code                                                                                  │
+│        • 将 activation_status 重置为 pending                                                                         │
+│        • 清空 expired_time                                                                                           │
+│                                                                                                                      │
+│ 测试方法（使用 curl）                                                                                                │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 获取管理员 Token（略，同之前 /auth/login）                                                                        │
+│  • 创建用户 curl -X POST "http://localhost:8000/admin/users"                                                         │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│    -H "Content-Type: application/json"                                                                               │
+│    -d "{"email":"u3@example.com","password":"Secret123!","role":"user"}"                                             │
+│  • 查询用户列表（模糊 email，分页） curl -H "Authorization: Bearer <ADMIN_TOKEN>"                                    │
+│    "http://localhost:8000/admin/users?email=u3&page=1&size=20"                                                       │
+│  • 更新用户（改角色/状态/有效期） curl -X PUT "http://localhost:8000/admin/users/<USER_ID>"                          │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│    -H "Content-Type: application/json"                                                                               │
+│    -d "{"role":"admin","activation_status":"active"}"                                                                │
+│  • 删除用户（联动删除激活码） curl -X DELETE "http://localhost:8000/admin/users/<USER_ID>"                           │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│  • 查询激活码 curl -H "Authorization: Bearer <ADMIN_TOKEN>"                                                          │
+│    "http://localhost:8000/admin/activation/"                                                                         │
+│  • 更新激活码（例如：延长有效天数、撤销） curl -X PUT "http://localhost:8000/admin/activation/"                      │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│    -H "Content-Type: application/json"                                                                               │
+│    -d "{"valid_days":60,"status":"revoked"}"                                                                         │
+│  • 删除激活码（联动重置用户的激活状态） curl -X DELETE "http://localhost:8000/admin/activation/"                     │
+│    -H "Authorization: Bearer <ADMIN_TOKEN>"                                                                          │
+│                                                                                                                      │
+│ 现有管理配套接口                                                                                                     │
+│                                                                                                                      │
+│  • 生成激活码（管理员）：POST /activation/generate                                                                   │
+│  • 列出激活码（管理员）：GET /activation/list                                                                        │
+│  • 撤销激活码（管理员）：POST /activation/revoke                                                                     │
+│  • 导出激活码 CSV（管理员）：GET /activation/export                                                                  │
+│  • 用户激活（普通用户已登录）：POST /activation/activate                                                             │
+│  • 查看当前用户：GET /auth/me（未激活的普通用户也可访问）                                                            │
+│                                                                                                                      │
+│ 注意与说明                                                                                                           │
+│                                                                                                                      │
+│  • 目前更新激活码接口仅更新 valid_days 或                                                                            │
+│    status，不改变用户状态。只有“删除激活码”才会按你的要求“同步清理用户激活信息”。如果你希望“管理员修改激活码状态也能 │
+│    影响已绑定的用户”（例如把激活码改为 revoked 时，用户立即失效），我们可以再补充规则与实现。                        │
+│  • activation_codes.user_email 与 accounts.email 是外键，但没有数据库层面的 ON DELETE                                │
+│    CASCADE；我们在服务层做了显式删除与同步，兼顾 PostgreSQL 和 SQLite。                                              │
+│  • activation_codes 里的时间字段是 text（ISO 字符串，按你的要求）；accounts.expired_time                             │
+│    为带时区的时间戳，供访问控制判断。                                                                                │
+│                                                                                                                      │
+│ 下一步建议                                                                                                           │
+│                                                                                                                      │
+│  • 增加审计日志（谁在何时创建/撤销/删除/导出激活码、修改/删除用户）                                                  │
+│  • 批量操作（批量删除/撤销/导出）                                                                                    │
+│  • 集成测试覆盖管理员 CRUD 与联动逻辑                                                                                │
+│  • 文档化管理员接口（我可以整理成一份管理手册或 Confluence 页面）                                                    │
+│                                                                                                                      │
+│ 需要我继续：                                                                                                         │
+│                                                                                                                      │
+│  • 为“更新激活码状态”增加对已绑定用户的同步策略（例如改为 revoked 即禁用用户）？                                     │
+│  • 补充集成测试用例并创建一个 PR？                                                                                   │
+│  • 生成一页 Confluence 文档总结管理员功能与操作流程？                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 开发公众号登录部分的功能及接口，我的要求如下： 1. 公众号登录的目的是为了获取公众号的cookies， script\wechat_login.py 这个脚本中详细说明了登录的逻辑。 2. 公众号登录的接口开发采用/cookie 3.该功能的使用权限是管理员和普通用户登录成功，且在激活有效期内才可以正常使用。 4. 公众号登录接口包括：(1)/cookie/get , 请求微信登录页，返回二维码，然后用户扫码登录后，服务器返回登录成功或失败的状态，登录成功后服务器保存cookie文件，并将cookie的有效信息写入到数据库，并且自动选择当前cookie做为后续的公众号账号搜索和文章搜索的请求cookie。 (2)/cookie/change, 切换cookie，一个账号可以登录多个公众号，保存多个cookie，切换cookie作为公众号账号搜索和文章搜索的请求cookie。 (3)/cookie/delete, 删除cookie，账号可以自动删除cookie，并且cookie的保存有有效期，当超过cookie的有效期时，需要自动删除cookie，并且自动删除数据库的cookie信息。 (4)/cookie/list, 展示有效cookie列表，账号操作/cookie/get 登录成功获取到的cookie归属于当前账号，这个需要在数据库表cookies中设置一个字段owneremail，请求/cookie/list 则代表展示当前账号下的有效cookie信息。 5. 数据库表cookies的表头设计： id:uuid 主键; token:cookie中的token字段; owner_email:外键，关联表accounts.email，代表cookie归属的账号; created_time:创建时间; expire_time:过期时间是创建时间+88小时; name:cookie对应的账号名称; avatar_url:cookie获取到的账号头像地址; avatar:cookie获取到的账号保存到服务器的地址; local:cookie文件保存到服务器的路径 6. cookie登录成功后，统一保存到本地的静态路径/static/cookies下，然后每个cookie新建一个以cookie中的token值为文件夹名称的子文件夹，然后将cookie.json、gzhcookies.cookie、avatar.jpg存放到这个路径下面，这个子文件夹的路径保存在数据库表头的local列
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ I’ve reviewed the existing FastAPI app and the script/wechat_login.py logic, then implemented a complete “公众号登录 │
+│ + 多 Cookie 管理”功能，满足你的接口与数据要求。                                                                      │
+│                                                                                                                      │
+│ What I did                                                                                                           │
+│                                                                                                                      │
+│  • 数据库模型                                                                                                        │
+│     • 新增 app/models/cookie.py 模型：                                                                               │
+│        • 表名：cookies                                                                                               │
+│        • 字段：id(uuid主键)、token、owner_email(FK                                                                   │
+│          accounts.email)、created_time、expire_time(创建+88小时)、name、avatar_url、avatar(本地头像路径)、local(本地 │
+│          cookie目录路径)、is_current(当前使用)                                                                       │
+│        • 唯一索引：token                                                                                             │
+│        • 复合索引：owner_email + is_current                                                                          │
+│     • 在 app/db/base.py 中注册 Cookie 模型                                                                           │
+│     • 新增 Alembic 迁移 alembic/versions/0002_add_cookies_table.py（生产建议使用 migration；开发环境仍可走           │
+│       metadata.create_all）                                                                                          │
+│  • 服务与业务逻辑                                                                                                    │
+│     • 新增 app/services/cookie.py：                                                                                  │
+│        • 仿照 script/wechat_login.py 实现微信扫码登录流程（二维码生成 + 状态轮询 + 确认后登录）                      │
+│        • 登录成功后：                                                                                                │
+│           • 将 cookie 文件保存至 /static/cookies/<token>/gzhcookies.cookie                                           │
+│           • 将详细信息保存为 /static/cookies/<token>/cookie.json（包括                                               │
+│             token、cookie、创建/过期时间、请求计数、名称、头像等）                                                   │
+│           • 抓取公众号名称与头像，保存 /static/cookies/<token>/avatar.jpg                                            │
+│           • 在 DB 中写入一条 Cookie 记录，并将其设为 is_current=True（同时把其他设为 False）                         │
+│        • 提供接口方法：                                                                                              │
+│           • wechat_login(timeout_seconds=...)：获取二维码并轮询登录                                                  │
+│           • persist_login_for_user(owner_email, result)：持久化登录结果到数据库                                      │
+│           • set_current_cookie(owner_email, token)：切换当前 cookie                                                  │
+│           • list_valid_cookies(owner_email)：列出有效 cookie（会先清理过期）                                         │
+│           • delete_cookie(owner_email, token)：删除 cookie（同时删除本地目录）                                       │
+│           • cleanup_expired(owner_email=None)：清理过期 cookie 和本地目录                                            │
+│     • 默认静态目录根：static/cookies（与你的要求一致）                                                               │
+│  • API 与权限                                                                                                        │
+│     • 新增路由 app/api/v1/routes/cookie.py，挂载到 /cookie：                                                         │
+│        • GET /cookie/get：                                                                                           │
+│           • 发起微信登录流程，返回二维码（base64，默认返回），若在等待时间内扫码确认成功则保存 cookie                │
+│             并返回成功，否则返回 pending                                                                             │
+│           • 权限：需要登录且激活有效（管理员与普通用户均可）                                                         │
+│        • POST /cookie/change：切换当前 cookie（本账号下）                                                            │
+│        • POST /cookie/delete：删除本账号下的某个 cookie（含本地文件夹删除）                                          │
+│        • GET /cookie/list：展示当前账号下的有效 cookie 列表                                                          │
+│     • 路由依赖 require_active_user，确保“登录+激活有效期内”才能使用，符合你的要求                                    │
+│     • 在 app/main.py 中引入并注册该路由                                                                              │
+│     • 在 app/main.py 中挂载静态目录 /static，并在启动时触发一次 cookie 过期清理                                      │
+│  • Schemas                                                                                                           │
+│     • 新增 app/schemas/cookie.py：                                                                                   │
+│        • CookieOut、CookieListResponse、CookieChangeRequest、CookieDeleteRequest、CookieGetResponse                  │
+│  • 其他                                                                                                              │
+│     • requirements.txt 增加 requests 依赖                                                                            │
+│     • README_FASTAPI.md 增加 “公众号登录与多 Cookie 管理接口” 说明                                                   │
+│     • 保持与 script/wechat_login.py 一致的主要登录流程与保存结构（只是将路径改为 /static/cookies/<token>/...         │
+│       并将摘要写入 DB）                                                                                              │
+│                                                                                                                      │
+│ 接口用法示例                                                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 获取二维码并登录                                                                                                  │
+│     • GET /cookie/get?wait_seconds=180&inline_qr=true                                                                │
+│     • 返回：                                                                                                         │
+│        • status: success/pending/failed                                                                              │
+│        • qrcode_base64: 若 inline_qr=true 则返回 base64 的二维码                                                     │
+│        • cookie: 登录成功后返回 CookieOut（同时保存到 DB 并设为当前）                                                │
+│  • 切换当前 cookie                                                                                                   │
+│     • POST /cookie/change                                                                                            │
+│     • Body: { "token": "" }                                                                                          │
+│  • 删除 cookie                                                                                                       │
+│     • POST /cookie/delete                                                                                            │
+│     • Body: { "token": "" }                                                                                          │
+│  • 列出有效 cookie 列表                                                                                              │
+│     • GET /cookie/list                                                                                               │
+│                                                                                                                      │
+│ 权限与过期清理                                                                                                       │
+│                                                                                                                      │
+│  • 所有 /cookie/* 接口均要求登录且激活有效期内（管理员与普通用户都需要满足）                                         │
+│  • list 会先进行清理；main 启动时也会进行一次清理                                                                    │
+│  • 删除 cookie 时会自动删除 /static/cookies/<token>/ 目录及 DB 记录                                                  │
+│  • DB 中的 expire_time 是创建时间 + 88 小时；超过会自动判定失效并清理                                                │
+│                                                                                                                      │
+│ 下一步建议                                                                                                           │
+│                                                                                                                      │
+│  • 对接“公众号账号搜索/文章搜索”逻辑，读取当前账号 is_current 的 cookie，用于后续请求                                │
+│  • 增加“获取当前 cookie”接口，便于前端展示哪个在用                                                                   │
+│  • 增加“后台周期任务”定时清理无效 cookie（目前有启动与调用时清理）                                                   │
+│                                                                                                                      │
+│ 我可以帮你：                                                                                                         │
+│                                                                                                                      │
+│  • 创建一个 Pull Request 来提交本次改动                                                                              │
+│  • 生成一份 Confluence 页面记录设计与接口说明                                                                        │
+│  • 创建 Jira 任务来跟踪后续 TODO（比如接入搜索功能、定时清理）                                                       │
+│    你希望我先做哪一个？或者还有其他调整需求（比如将二维码改为图片流返回、增加“获取当前 cookie”接口）吗？             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 我需要测试验证这个cookie全部接口的功能，请给出我测试操作方法说明
+
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 好的，后续我将使用中文回复。下面是验证“公众号 Cookie 全部接口”的完整测试说明与操作步骤。                             │
+│                                                                                                                      │
+│ 前置条件                                                                                                             │
+│                                                                                                                      │
+│  • 安装依赖并启动服务：                                                                                              │
+│     • pip install -r requirements.txt                                                                                │
+│     • uvicorn app.main:app --reload                                                                                  │
+│  • 默认数据库是 SQLite 文件 ./app.db                                                                                 │
+│  • 服务器需要能访问                                                                                                  │
+│    https://mp.weixin.qq.com/，并且你的微信号对目标公众号有后台登录权限（扫码后手机上要能确认登录）。                 │
+│                                                                                                                      │
+│  1 获取可用的测试用户令牌 你需要一个“已登录 且 激活有效”的账号（管理员或普通用户都可以），有两种方式：               │
+│                                                                                                                      │
+│ 方式A（最快）：把测试用户设为管理员（跳过激活校验）                                                                  │
+│                                                                                                                      │
+│  1 注册并登录拿到 token                                                                                              │
+│                                                                                                                      │
+│  • 注册 curl -X POST http://localhost:8000/auth/register -H "Content-Type: application/json" -d                      │
+│    '{"email":"tester@example.com","password":"Secret123!"}'                                                          │
+│  • 登录 TOKEN=$(curl -s -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d              │
+│    '{"email":"tester@example.com","password":"Secret123!"}' | jq -r '.access_token')                                 │
+│                                                                                                                      │
+│  2 把用户设为 admin（SQLite 命令）                                                                                   │
+│                                                                                                                      │
+│  • sqlite3 app.db "UPDATE accounts SET role='admin' WHERE email='tester@example.com';"                               │
+│                                                                                                                      │
+│ 此时使用 TOKEN 即可直接访问 /cookie 接口。                                                                           │
+│                                                                                                                      │
+│ 方式B（完整流程）：生成激活码并激活（需要管理员）                                                                    │
+│                                                                                                                      │
+│  1 临时将 tester@example.com 设为 admin（同A-2步骤），登录拿到 ADMIN_TOKEN                                           │
+│  2 生成激活码（管理员操作）                                                                                          │
+│                                                                                                                      │
+│  • curl -s -X POST "http://localhost:8000/activation/generate" -H "Authorization: Bearer $ADMIN_TOKEN" -H            │
+│    "Content-Type: application/json" -d '{"valid_days":8,"count":1}'                                                  │
+│  • 记录返回中的 activation_code                                                                                      │
+│                                                                                                                      │
+│  3 用普通用户 TOKEN 调用激活接口                                                                                     │
+│                                                                                                                      │
+│  • curl -s -X POST "http://localhost:8000/activation/activate" -H "Authorization: Bearer $TOKEN" -H "Content-Type:   │
+│    application/json" -d '{"activation_code":"<粘贴刚才的激活码>"}'                                                   │
+
+lucida1607@gmail.com
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkaWpPN1AwZlRuYWlFUmxwSm1qUnJRIiwiaWF0IjoxNzU3NTcxNDkyLCJleHAiOjE3NTc2NTc4OTJ9.FVcTEzRMcUeiSD1ZntgA3Rdq9MJfBp5d95iqlEUhs8k
+
+
+│  2 测试 /cookie/get（获取二维码并扫码登录）                                                                          │
+│                                                                                                                      │
+│  • 启动扫码登录，返回二维码（base64），服务端会在 wait_seconds                                                       │
+│    时间内轮询扫码状态。你用微信扫码并在手机上确认后，接口会返回 success，并在本地保存 cookie                         │
+│    文件，同时写入数据库，并自动把这个 cookie 设置为当前 is_current。                                                 │
+│                                                                                                                      │
+│ 请求：                                                                                                               │
+│                                                                                                                      │
+│  • curl -s "http://localhost:8000/cookie/get?wait_seconds=180&inline_qr=true" -H "Authorization: Bearer $TOKEN" -H   │
+│    "Accept: application/json" > get_cookie.json                                                                      │
+│                                                                                                                      │
+│ 将二维码保存成本地图片并打开：                                                                                       │
+│                                                                                                                      │
+│  • macOS/Linux: cat get_cookie.json | jq -r '.qrcode_base64' | base64 -d > qrcode.png                                │
+│  • Windows PowerShell: $b64 = (Get-Content get_cookie.json | ConvertFrom-Json).qrcode_base64;                        │
+│    [IO.File]::WriteAllBytes("qrcode.png", [Convert]::FromBase64String($b64))                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ 打开 qrcode.png，用微信扫码并在手机上确认。若在 wait_seconds 内确认成功，接口会返回： { "status": "success",         │
+│ "message": "登录成功并保存cookie", "cookie": { "id": "...", "token": "<token字符串>", "owner_email":                 │
+│ "tester@example.com", "created_time": "...", "expire_time": "...", "name": "公众号名称", "avatar_url":               │
+│ "https://...", "avatar": "static/cookies//avatar.jpg", "local": "static/cookies/", "is_current": true },             │
+│ "qrcode_base64": "<base64图像>" }                                                                                    │
+│                                                                                                                      │
+│ 如果返回 "status": "pending"，表示未确认或超时，可以再次调用 /cookie/get 或增大 wait_seconds。                       │
+│                                                                                                                      │
+│ 登录成功后，确认本地文件已生成：                                                                                     │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • static/cookies//cookie.json                                                                                       │
+│  • static/cookies//gzhcookies.cookie                                                                                 │
+│  • static/cookies//avatar.jpg                                                                                        │
+│                                                                                                                      │
+│  3 测试 /cookie/list（展示当前账号下有效 cookies）                                                                   │
+│                                                                                                                      │
+│  • curl -s -X GET http://localhost:8000/cookie/list -H "Authorization: Bearer $TOKEN" | jq                           │
+│  • 你应该能看到刚刚登录成功写入的 cookie 条目，注意 name、avatar_url、local、is_current=true 等字段。                │
+│                                                                                                                      │
+│  4 再次获取另一个 cookie 并测试 /cookie/change（切换当前 cookie）                                                    │
+│                                                                                                                      │
+│  • 重复步骤2，再扫码一次（可以是另一个公众号，或者同一公众号再次登录获取另一条），完成后再列出列表：                 │
+│     • curl -s -X GET http://localhost:8000/cookie/list -H "Authorization: Bearer $TOKEN" | jq                        │
+│  • 选择一个 token 切换为当前：                                                                                       │
+│     • curl -s -X POST http://localhost:8000/cookie/change -H "Authorization: Bearer $TOKEN" -H "Content-Type:        │
+│       application/json" -d '{"token":"<TOKEN_TO_SET>"}' | jq                                                         │
+│  • 再次验证列表，确认 is_current 已变更：                                                                            │
+│     • curl -s -X GET http://localhost:8000/cookie/list -H "Authorization: Bearer $TOKEN" | jq                        │
+│                                                                                                                      │
+│  5 测试 /cookie/delete（删除 cookie）                                                                                │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 删除指定 token（仅限当前账号名下）：                                                                              │
+│     • curl -s -X POST http://localhost:8000/cookie/delete -H "Authorization: Bearer $TOKEN" -H "Content-Type:        │
+│       application/json" -d '{"token":"<TOKEN_TO_DELETE>"}' | jq                                                      │
+│  • 确认：                                                                                                            │
+│     • curl -s -X GET http://localhost:8000/cookie/list -H "Authorization: Bearer $TOKEN" | jq                        │
+│     • 本地目录 static/cookies// 应被删除                                                                             │
+│                                                                                                                      │
+│  6 测试自动清理过期 cookie                                                                                           │
+│                                                                                                                      │
+│  • 手动将某条 cookie 的 expire_time 改成过去时间（SQLite）：                                                         │
+│     • sqlite3 app.db "UPDATE cookies SET expire_time='2000-01-01T00:00:00+00:00' WHERE                               │
+│       owner_email='tester@example.com';"                                                                             │
+│  • 再调用列表：                                                                                                      │
+│     • curl -s -X GET http://localhost:8000/cookie/list -H "Authorization: Bearer $TOKEN" | jq                        │
+│  • 该条过期 cookie 会被自动清理（DB 删除并删除本地目录）。                                                           │
+│                                                                                                                      │
+│ 可选：Python 脚本测试（自动弹出二维码窗口） 保存为 tmp_rovodev_test_cookie.py：                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  import base64, httpx, json, io                                                                                      │
+│  from PIL import Image                                                                                               │
+│                                                                                                                      │
+│  BASE = "http://localhost:8000"                                                                                      │
+│  TOKEN = "<YOUR_TOKEN>"                                                                                              │
+│                                                                                                                      │
+│  with httpx.Client(base_url=BASE, timeout=60.0) as c:                                                                │
+│      r = c.get("/cookie/get?wait_seconds=180&inline_qr=true", headers={"Authorization": f"Bearer {TOKEN}"})          │
+│      data = r.json()                                                                                                 │
+│      if data.get("qrcode_base64"):                                                                                   │
+│          img = Image.open(io.BytesIO(base64.b64decode(data["qrcode_base64"])))                                       │
+│          img.show()                                                                                                  │
+│      print(json.dumps(data, ensure_ascii=False, indent=2))                                                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│ 运行后会弹出二维码窗口，扫码并确认即可。                                                                             │
+│                                                                                                                      │
+│ 常见问题排查                                                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 401 Unauthorized：确认请求头中包含 Authorization: Bearer  且 token 有效。                                         │
+│  • 403 Account not activated：请按上文“方式B”完成激活，或临时将用户设为 admin 测试。                                 │
+│  • 总是 pending 或失败：检查服务器网络是否能访问 mp.weixin.qq.com，及你的微信号是否具备公众号后台登录权限。          │
+│  • 成功提示但看不到文件：查看服务端日志，默认保存至 static/cookies//。                                               │
+│                                                                                                                      │
+│ 需要我帮你：                                                                                                         │
+│                                                                                                                      │
+│  • 生成一份 Postman 集合方便你一键跑全套测试？                                                                       │
+│  • 创建一个 Pull Request，将本次功能提交合并？                                                                       │
+│  • 在 Confluence 上生成一篇“Cookie 登录与管理接口测试指南”的文档？                                                   │
+│  • 或者你希望我顺带加一个“获取当前使用 cookie”的接口？                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 明白，这个现象通常是因为服务端在调用微信的登录接口时被网络阻塞，导致 /cookie/get                                     │
+│ 一直在“轮询扫码状态”这一步卡住，没有及时返回。我们的实现会在 wait_seconds 期间（你传的是 180s）循环请求微信接口，每  │
+│ 3 秒一次，如果这些请求在你的服务器上无法连通 mp.weixin.qq.com（被防火墙/网络策略/DNS                                 │
+│ 等拦截），就会出现你看到的“客户端和服务端都卡住”的情况。                                                             │
+│                                                                                                                      │
+│ 先做快速排查                                                                                                         │
+│                                                                                                                      │
+│  • 确认 API 还活着                                                                                                   │
+│     • 新开一个终端调 /health：                                                                                       │
+│        • curl -i http://localhost:8000/health                                                                        │
+│     • 如果能返回 200，说明服务还活着，/cookie/get 是在等待微信返回。                                                 │
+│  • 缩短等待时间                                                                                                      │
+│     • 改成 30 秒看是否按时返回 pending：                                                                             │
+│        • curl -s "http://localhost:8000/cookie/get?wait_seconds=30&inline_qr=true" -H "Authorization: Bearer         │
+│          <你的TOKEN>"                                                                                                │
+│     • 如果 30 秒过去也不返回，基本可确认是访问微信接口被阻塞。                                                       │
+│  • 检查服务器到微信的连通性（在运行 API 的同一台机器上执行）                                                         │
+│     • curl -I https://mp.weixin.qq.com                                                                               │
+│     • curl -m 10 "https://mp.weixin.qq.com/cgi-bin/scanloginqrcode?action=ask&token=&lang=zh_CN&f=json&ajax=1"       │
+│     • 如果以上请求很久都不返回或超时，说明服务器侧网络到微信被卡住，需要代理/网络例外。                              │
+│  • 如需代理，配置代理再启动服务                                                                                      │
+│     • 举例（根据你的环境调整）：                                                                                     │
+│        • Linux/macOS:                                                                                                │
+│           • export HTTPS_PROXY=http://你的代理:端口                                                                  │
+│           • export HTTP_PROXY=http://你的代理:端口                                                                   │
+│        • Windows PowerShell:                                                                                         │
+│           • $env:HTTPS_PROXY="http://你的代理:端口"                                                                  │
+│           • $env:HTTP_PROXY="http://你的代理:端口"                                                                   │
+│     • 然后重启 uvicorn                                                                                               │
+│  • 开启更详细日志                                                                                                    │
+│     • uvicorn app.main:app --reload --log-level debug                                                                │
+│     • 观察服务端日志，能看到是卡在“获取二维码”还是“轮询 ask 接口”的阶段。                                            │
+│                                                                                                                      │
+│ 为什么会卡住                                                                                                         │
+│                                                                                                                      │
+│  • /cookie/get 内部会按以下步骤访问微信接口：                                                                        │
+│     1 访问 https://mp.weixin.qq.com/ 初始化会话                                                                      │
+│     2 POST /cgi-bin/bizlogin?action=startlogin                                                                       │
+│     3 GET /cgi-bin/scanloginqrcode?action=getqrcode 获取二维码                                                       │
+│     4 轮询 GET /cgi-bin/scanloginqrcode?action=ask 查询扫码状态（最多 wait_seconds）                                 │
+│  • 我们对 requests 都设置了 10 秒超时；但若 DNS                                                                      │
+│    解析或网络层在你环境中被深度阻断，这个超时有时也不能很好保护，从而出现“长时间卡住”的体验。                        │
+│                                                                                                                      │
+│ 两种可选改进方案（我可以帮你改）                                                                                     │
+│                                                                                                                      │
+│  • 方案A：非阻塞模式（推荐测试环境使用）                                                                             │
+│     • 在 /cookie/get 增加 mode=immediate 参数，立即返回二维码 base64 和一个 login_key，不在接口内长时间轮询          │
+│     • 新增 /cookie/poll?login_key=... 用于客户端轮询状态；当检测到 status=1（已确认）时，服务端完成登录并持久化      │
+│     • 优点：接口不长时间阻塞；弱网下体验更好                                                                         │
+│     • 缺点：需要在服务端内存存 session（仅适合单实例/测试环境）                                                      │
+│  • 方案B：增强超时保护与日志                                                                                         │
+│     • 对所有 requests 请求使用更短更严格的超时（比如 timeout=(5,5)），并在超时后立即返回 status=pending 或           │
+│       failed，避免“卡住”                                                                                             │
+│     • 额外打印每一步的日志（获取二维码、轮询 ask、登录确认等），方便你定位是哪一步被网络阻断                         │
+│                                                                                                                      │
+│ 临时可操作的替代测试方法                                                                                             │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 先用短 wait_seconds 做验证：                                                                                      │
+│     • curl -s "http://localhost:8000/cookie/get?wait_seconds=30&inline_qr=true" -H "Authorization: Bearer " >        │
+│       get_cookie.json                                                                                                │
+│     • 如果 30 秒后有响应（pending），说明服务本身没问题，是访问微信被卡。                                            │
+│  • 确认网络后再进行扫码：                                                                                            │
+│     • 把 wait_seconds 调大些（比如 120）                                                                             │
+│     • 生成的二维码提取为图片：                                                                                       │
+│        • cat get_cookie.json | jq -r '.qrcode_base64' | base64 -d > qrcode.png                                       │
+│     • 打开图片扫码并在手机确认，等待接口返回 success                                                                 │
+│                                                                                                                      │
+│ 接下来我可以帮你做什么？                                                                                             │
+│                                                                                                                      │
+│  1 为 /cookie/get 增加 “immediate 模式 + /cookie/poll 轮询接口”，避免长时间阻塞（适合你当前情况）                    │
+│  2 增强现有实现的日志与超时保护，确保即使网络不通也会及时返回                                                        │
+│  3 帮你一起排查服务器网络连通性（提供你运行命令的结果，我们逐步定位）                                                │
+│                                                                                                                      │
+│ 你希望我先实现“非阻塞 immediate                                                                                      │
+│ 模式”，还是先加“超时与日志”的防护？也可以把你的环境（是否需要代理等）告诉我，我按你的情况微调实现。                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+本地没有找到 二维码图片
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 看到了，你的 JSON 在                                                                                                 │
+│ F:\linshutech\FastMP\get_cookie.json，建议用显式路径把二维码图片保存到同一目录，避免“当前目录”不明确的问题。请在     │
+│ PowerShell 中按下面步骤操作：                                                                                        │
+│                                                                                                                      │
+│ 步骤1：读取 JSON，保存二维码为图片                                                                                   │
+│                                                                                                                      │
+│  • 一行命令（推荐）： $b64 = (Get-Content -Raw 'F:\linshutech\FastMP\get_cookie.json' |                              │
+│    ConvertFrom-Json).qrcode_base64; if ($b64 -match '^data:image/\w+;base64,') { $b64 = $b64 -replace                │
+│    '^data:image/\w+;base64,','' }; [IO.File]::WriteAllBytes('F:\linshutech\FastMP\qrcode.png',                       │
+│    [Convert]::FromBase64String($b64))                                                                                │
+│  • 逐步方式（便于查看字段）： $data = Get-Content -Raw 'F:\linshutech\FastMP\get_cookie.json' | ConvertFrom-Json     │
+│    $data | Format-List $b64 = $data.qrcode_base64                                                                    │
+│    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│    ┃                                 如果前缀类似 data:image/png;base64, 就先去掉                                  ┃ │
+│    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│    if ($b64 -match '^data:image/\w+;base64,') { $b64 = $b64 -replace '^data:image/\w+;base64,','' }                  │
+│    [IO.File]::WriteAllBytes('F:\linshutech\FastMP\qrcode.png', [Convert]::FromBase64String($b64))                    │
+│                                                                                                                      │
+│ 说明：                                                                                                               │
+│                                                                                                                      │
+│  • 我们返回的字段名是 qrcode_base64（没有 data:image/png;base64, 前缀，正常无需替换前缀，代码里加了防御）。          │
+│  • 保存后的图片路径是 F:\linshutech\FastMP\qrcode.png。                                                              │
+│                                                                                                                      │
+│ 步骤2：确认与打开图片                                                                                                │
+│                                                                                                                      │
+│  • 测试是否存在： Test-Path 'F:\linshutech\FastMP\qrcode.png'                                                        │
+│  • 打开图片（默认系统查看器）： Start-Process 'F:\linshutech\FastMP\qrcode.png'                                      │
+│                                                                                                                      │
+│ 若仍未生成图片，请检查以下几点                                                                                       │
+│                                                                                                                      │
+│  • 确认字段名是否正确：                                                                                              │
+│     • 列出 JSON 中的所有键： $data.PSObject.Properties.Name                                                          │
+│     • 有些情况下你说“有 qr 字段”，那可能不是 qrcode_base64，而是 qr、qrcode、qrcodeBase64 之类。把上面命令里的       │
+│       .qrcode_base64 换成真实的字段名。                                                                              │
+│  • 确认 qrcode_base64 不为空：                                                                                       │
+│     • $b64.Length                                                                                                    │
+│     • 如果为 0 或 $null，说明这次响应可能是 pending/failed 或未包含二维码，请把 $data                                │
+│       整体贴出来（去隐私），我帮你判断。                                                                             │
+│  • 确认写入路径可写：                                                                                                │
+│     • 尝试保存到用户下载目录： $out = Join-Path $HOME 'Downloads\qrcode.png'; [IO.File]::WriteAllBytes($out,         │
+│       [Convert]::FromBase64String($b64)); Start-Process $out                                                         │
+│                                                                                                                      │
+│ 接下来要不要我：                                                                                                     │
+│                                                                                                                      │
+│  • 帮你把 /cookie/get 改成“非阻塞 immediate 模式”（先返回二维码+login_key，再用 /cookie/poll                         │
+│    轮询），避免长时间卡住？                                                                                          │
+│  • 或者给现有流程加“更短超时+详细日志”，便于排查网络阻塞在哪一步？                                                   │
+│  • 继续指导你完成后续 /cookie/change、/cookie/delete、/cookie/list 的测试？                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 请你帮我把/cookie/get 改成“非阻塞 immediate 模式” （先返回二维码+login_key，再用 /cookie/poll 轮询），避免长时间卡住？
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 我已经把 /cookie/get 改造成“非阻塞 immediate 模式”，并新增了 /cookie/poll 轮询接口。现在流程是：                     │
+│                                                                                                                      │
+│  • GET /cookie/get：立即返回二维码的 base64 和 login_key，不再阻塞等待扫码。                                         │
+│  • GET /cookie/poll?login_key=...：客户端拿着 login_key 每隔2-3秒轮询，直到返回 success（完成登录并保存              │
+│    cookie）、pending（继续轮询）、或 failed（失败/过期）。                                                           │
+│                                                                                                                      │
+│ 变更详情                                                                                                             │
+│                                                                                                                      │
+│  • 服务层                                                                                                            │
+│     • CookieService 新增非阻塞模式：                                                                                 │
+│        • wechat_login_immediate_start()：初始化会话、生成二维码，返回 qrcode_base64 与 login_key，并将               │
+│          session/headers/二维码 等存入内存字典 _immediate_store。                                                    │
+│        • wechat_login_immediate_poll(login_key)：使用保存的 session 调 ask 接口判断状态，确认后完成登录（保存 cookie │
+│          文件与 cookie.json、抓取公众号名称与头像），并从内存删除该 login_key。                                      │
+│     • 保留原阻塞模式（wechat_login -> _wechat_login_blocking），以兼容和备用。                                       │
+│  • API 层                                                                                                            │
+│     • GET /cookie/get：改为 immediate 模式，响应结构新增 login_key 字段。                                            │
+│     • 新增 GET /cookie/poll?login_key=...：轮询接口，成功时会持久化到 DB 并返回 CookieOut。                          │
+│  • Schemas                                                                                                           │
+│     • CookieGetResponse 增加 login_key 字段。                                                                        │
+│                                                                                                                      │
+│ 如何测试新模式                                                                                                       │
+│                                                                                                                      │
+│  1 获取二维码和 login_key（立即返回）                                                                                │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • curl -s "http://localhost:8000/cookie/get?inline_qr=true" -H "Authorization: Bearer " > get_cookie.json           │
+│  • 从 JSON 中取出 login_key 与 qrcode_base64                                                                         │
+│     • PowerShell: $data = Get-Content -Raw .\get_cookie.json | ConvertFrom-Json $data.login_key $b64 =               
+       $data.qrcode_base64 if ($b64 -match '^data:image/\w+;base64,') { $b64 = $b64 -replace                         
+       '^data:image/\w+;base64,','' } [IO.File]::WriteAllBytes("$HOME\Downloads\qrcode.png",                              [Convert]::FromBase64String($b64)) Start-Process "$HOME\Downloads\qrcode.png"                                  
+│                                                                                                                      │
+│  2 客户端轮询                                                                                                        │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 每隔2~3秒调用一次 poll（建议限制重试时间，例如2分钟超时）：                                                       │
+│     • curl -s "http://localhost:8000/cookie/poll?login_key=<上一步返回的login_key>" -H "Authorization: Bearer " | jq │
+│  • 返回含义：                                                                                                        │
+│     • status = pending：继续轮询，message会提示“未失效/已扫码待确认”                                                 │
+│     • status = success：登录完成，服务端已保存 cookie 文件与 DB 记录，并返回 cookie 字段                             │
+│     • 4xx with detail：失败或 login_key 失效，需重新 /cookie/get                                                     │
+│                                                                                                                      │
+│  3 验证本地文件和数据库                                                                                              │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 文件路径：                                                                                                        │
+│     • static/cookies//cookie.json                                                                                    │
+│     • static/cookies//gzhcookies.cookie                                                                              │
+│     • static/cookies//avatar.jpg                                                                                     │
+│  • DB：/cookie/list 可看到该条记录且 is_current=true                                                                 │
+│                                                                                                                      │
+│ 重要说明                                                                                                             │
+│                                                                                                                      │
+│  • immediate 模式使用了内存存储 _immediate_store                                                                     │
+│    来保存会话状态，适用于“单实例/测试环境”。如果你要在多实例或重启后保持会话，需要改为 Redis                         │
+│    等共享存储（我可以继续帮你做）。                                                                                  │
+│  • 如果你的服务器网络到 mp.weixin.qq.com 不通，/cookie/poll 可能会一直 pending                                       │
+│    或失败。请确保网络连通，必要时配置代理后再启动服务。                                                              │
+│                                                                                                                      │
+│ 你希望我接下来：                                                                                                     │
+│                                                                                                                      │
+│  • 增加 login_key 自动过期与清理（例如5分钟未完成则移除）？                                                          │
+│  • 将 _immediate_store 替换为 Redis 存储，支持多实例与重启恢复？                                                     │
+│  • 补充 Postman 集合或前端轮询的示例代码，方便你集成和测试？                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 同步更新头像和账号名称
+
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 好的，我已经按照你的要求完善了登录成功后的“头像与名称”采集逻辑，确保以下信息在登录成功后都会被获取与保存：           │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 从微信主页接口获取当前登录公众号的名称（name）与头像地址（avatar_url）                                            │
+│  • 下载头像保存为 static/cookies//avatar.jpg（avatar 字段保存该本地路径）                                            │
+│  • 将 name、avatar_url、avatar 写入到：                                                                              │
+│     • static/cookies//cookie.json                                                                                    │
+│     • 数据库表 cookies（字段 name、avatar_url、avatar）                                                              │
+│                                                                                                                      │
+│ 具体改动要点                                                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 强化了账号信息抓取（参考了 script/wechat_login.py 的逻辑）：                                                      │
+│     • 新增 _fetch_account_info(session, headers, token, folder, cookie_string)：                                     │
+│        • 优先解析 window.wx.commonData 中的 nick_name 与 head_img                                                    │
+│        • 其后尝试 var nickname 和 var headimg 作为兜底                                                               │
+│        • 对 http 的头像链接自动转换为 https                                                                          │
+│        • 下载头像到 avatar.jpg 并返回本地路径                                                                        │
+│     • 调用时确保带上 Cookie 头（某些环境仅 session 可能无法返回页面信息）                                            │
+│  • 在 immediate 模式的轮询成功分支中，调用 _fetch_account_info 并将返回的 name、avatar_url、avatar 写入 cookie.json  │
+│    和 DB：                                                                                                           │
+│     • 文件保存路径：static/cookies//avatar.jpg                                                                       │
+│     • cookie.json 中包含 name、avatar_url、avatar                                                                    │
+│     • DB 中 persist_login_for_user 会把 name、avatar_url、avatar 三个字段写入 cookies 表                             │
+│  • 同时修复了 immediate 模式的 login_key 生命周期问题：                                                              │
+│     • 使用模块级全局 IMMEDIATE_STORE 存放会话，避免跨请求丢失                                                        │
+│     • 增加 5 分钟有效期 TTL，/cookie/poll 会清理过期 login_key                                                       │
+│                                                                                                                      │
+│ 测试步骤（建议）                                                                                                     │
+│                                                                                                                      │
+│  1 重启服务加载最新代码：                                                                                            │
+│                                                                                                                      │
+│  • uvicorn app.main:app --reload                                                                                     │
+│                                                                                                                      │
+│  2 用测试脚本发起新的登录：                                                                                          │
+│                                                                                                                      │
+│  • python script/cookie_login_test.py                                                                                │
+│  • 扫码确认后，脚本会输出成功并展示 /cookie/list                                                                     │
+│                                                                                                                      │
+│  3 验证保存内容：                                                                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 确认本地文件：                                                                                                    │
+│     • static/cookies//cookie.json（检查 name、avatar、avatar_url 字段）                                              │
+│     • static/cookies//avatar.jpg（应为刚下载的头像）                                                                 │
+│  • 确认数据库记录（或调用接口）：                                                                                    │
+│     • GET /cookie/list 返回的 cookie 列表里，应能看到 name、avatar_url、avatar 字段                                  │
+│     • 或直接查 DB 的 cookies 表，看到 name、avatar_url、avatar 字段已写入                                            │
+│                                                                                                                      │
+│ 如果你还希望：                                                                                                       │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 在 /cookie/list 中把 avatar 字段改为可访问的 URL（例如                                                            │
+│    /static/cookies//avatar.jpg）而不是文件系统路径，我可以帮助你在返回层做 URL 拼接。                                │
+│  • 将 immediate 模式的会话存储改为 Redis，以支持多实例部署与重启恢复。                                               │
+│  • 增加一个 /cookie/current 接口，直接返回当前 is_current 的 cookie 基本信息。                                       │
+│                                                                                                                      │
+│ 要不要我继续优化“列表返回头像 URL”这一点，或者帮你把会话存储替换成 Redis？                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.auth import router as auth_router
 from app.api.v1.routes.me import router as me_router
+from app.api.v1.routes.cookie import router as cookie_router
 from app.api.v1.routes.activation import router as activation_router
+from app.api.v1.routes.admin import router as admin_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -26,6 +29,8 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(activation_router)
+app.include_router(admin_router)
+app.include_router(cookie_router)
 
 
 # Create tables on startup (for initial bootstrap; consider Alembic for production)
@@ -36,6 +41,21 @@ from app.db.session import engine, SessionLocal  # noqa: E402
 @app.on_event("startup")
 def on_startup() -> None:
    Base.metadata.create_all(bind=engine)
+   # Mount static for cookies
+   try:
+       app.mount("/static", StaticFiles(directory="static"), name="static")
+   except Exception:
+       # Ensure directory exists
+       import os
+       os.makedirs("static", exist_ok=True)
+       app.mount("/static", StaticFiles(directory="static"), name="static")
+   # Cleanup expired cookies on startup
+   try:
+       from app.services.cookie import CookieService
+       svc = CookieService(SessionLocal())
+       svc.cleanup_expired()
+   except Exception:
+       pass
 
 
 # Global auth+activation middleware (whitelist /auth/*, /health, docs)
