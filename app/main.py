@@ -9,6 +9,9 @@ from app.api.v1.routes.me import router as me_router
 from app.api.v1.routes.cookie import router as cookie_router
 from app.api.v1.routes.activation import router as activation_router
 from app.api.v1.routes.admin import router as admin_router
+from app.api.v1.routes.gzhaccount import router as gzhaccount_router
+from app.api.v1.routes.gzharticle import router as gzharticle_router
+from app.api.v1.routes.gzhaccount_admin_ops import router as gzhaccount_admin_ops_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -31,6 +34,9 @@ app.include_router(me_router)
 app.include_router(activation_router)
 app.include_router(admin_router)
 app.include_router(cookie_router)
+app.include_router(gzhaccount_router)
+app.include_router(gzharticle_router)
+app.include_router(gzhaccount_admin_ops_router)
 
 
 # Create tables on startup (for initial bootstrap; consider Alembic for production)

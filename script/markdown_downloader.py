@@ -86,7 +86,9 @@ class WeChatArticleDownloader:
                 if file_format == 'md':
                     file_path = self.save_to_markdown(title, content)
                 elif file_format == 'docx':
-                    file_path = self.save_to_docx(title, content)
+                    # 用 python-docx 方案
+                    html_content = requests.get(url, headers=self.headers, timeout=30).text
+                    file_path = self.save_to_docx_with_python_docx(title, html_content)
                 elif file_format == 'pdf':
                     file_path = self.save_to_pdf(title, content)
                 else:
@@ -178,7 +180,7 @@ class WeChatArticleDownloader:
                         img['src'] = f'./images/{local_filename}'
                         if 'data-src' in img.attrs:
                             del img['data-src']
-                        img_index += 1
+                    img_index += 1  # 始终递增 index，无论是否下载成功
             
             # 转换为Markdown格式
             markdown_content = self._convert_to_markdown(title, content_element)
@@ -264,8 +266,20 @@ class WeChatArticleDownloader:
             # 处理图片节点
             if element.name == 'img':
                 img_src = element.get('src')
-                if img_src and img_src.startswith('./images/'):
+                if img_src and (img_src.startswith('./images/') or img_src.startswith('images/')):
+                    # 修正图片路径为 images/xxx.jpg
+                    img_src = img_src.replace('./images/', 'images/')
                     markdown_content += f'![图片]({img_src})\n\n'
+                continue
+            
+            # 处理链接节点
+            elif element.name == 'a':
+                href = element.get('href', '')
+                link_text = element.get_text().strip()
+                if link_text and href:
+                    markdown_content += f'[{link_text}]({href})\n\n'
+                elif link_text:
+                    markdown_content += f'{link_text}\n\n'
                 continue
             
             # 处理段落
@@ -274,7 +288,8 @@ class WeChatArticleDownloader:
                 if images and len(list(element.stripped_strings)) == 0:
                     for img in images:
                         img_src = img.get('src')
-                        if img_src and img_src.startswith('./images/'):
+                        if img_src and (img_src.startswith('./images/') or img_src.startswith('images/')):
+                            img_src = img_src.replace('./images/', 'images/')
                             markdown_content += f'![图片]({img_src})\n\n'
                 else:
                     p_content = self._process_inline_elements(element)
@@ -297,9 +312,8 @@ class WeChatArticleDownloader:
         return markdown_content.strip()
     
     def _process_inline_elements(self, element):
-        """处理段落中的内联元素"""
+        """处理段落中的内联元素，递归优先识别链接"""
         result = ""
-        
         for child in element.children:
             if isinstance(child, str):
                 result += child
@@ -307,37 +321,39 @@ class WeChatArticleDownloader:
                 result += '\n'
             elif child.name == 'img':
                 img_src = child.get('src')
-                if img_src and img_src.startswith('./images/'):
+                if img_src and (img_src.startswith('./images/') or img_src.startswith('images/')):
+                    img_src = img_src.replace('./images/', 'images/')
                     result += f'![图片]({img_src})'
             elif child.name in ['strong', 'b']:
-                result += f"**{child.get_text().strip()}**"
+                result += f"**{self._process_inline_elements(child)}**"
             elif child.name in ['em', 'i']:
-                result += f"*{child.get_text().strip()}*"
+                result += f"*{self._process_inline_elements(child)}*"
             elif child.name == 'a':
                 href = child.get('href', '')
-                result += f"[{child.get_text().strip()}]({href})"
+                link_text = self._process_inline_elements(child)
+                if link_text and href:
+                    result += f"[{link_text}]({href})"
+                elif link_text:
+                    result += link_text
             elif child.name == 'code':
                 result += f"`{child.get_text().strip()}`"
             else:
-                result += child.get_text()
-        
-        result = re.sub(r'\s+', ' ', result)
+                # 对于 span、div、section 等，递归处理所有子节点
+                result += self._process_inline_elements(child)
+        result = re.sub(r' +', ' ', result)
         result = result.replace('\n', '\n\n')
         return result.strip()
-    
+
     def _process_div_or_section(self, element):
-        """递归处理div或section元素"""
+        """递归处理div或section元素，优先识别链接"""
         result = ""
-        
-        # 检查是否只包含一个图片
         images = element.find_all('img', recursive=False)
         if len(images) == 1 and len(list(element.stripped_strings)) == 0:
             img = images[0]
             img_src = img.get('src')
-            if img_src and img_src.startswith('./images/'):
+            if img_src and (img_src.startswith('./images/') or img_src.startswith('images/')):
+                img_src = img_src.replace('./images/', 'images/')
                 return f'![图片]({img_src})\n\n'
-        
-        # 处理子元素
         for child in element.children:
             if isinstance(child, str):
                 text = child.strip()
@@ -345,22 +361,32 @@ class WeChatArticleDownloader:
                     result += text + '\n\n'
             elif child.name == 'img':
                 img_src = child.get('src')
-                if img_src and img_src.startswith('./images/'):
+                if img_src and (img_src.startswith('./images/') or img_src.startswith('images/')):
+                    img_src = img_src.replace('./images/', 'images/')
                     result += f'![图片]({img_src})\n\n'
             elif child.name == 'p':
                 p_content = self._process_inline_elements(child)
                 if p_content:
                     result += p_content + '\n\n'
+            elif child.name == 'a':
+                href = child.get('href', '')
+                link_text = self._process_inline_elements(child)
+                if link_text and href:
+                    result += f'[{link_text}]({href})\n\n'
+                elif link_text:
+                    result += f'{link_text}\n\n'
             elif child.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                 level = int(child.name[1])
                 text = child.get_text().strip()
                 if text:
                     result += f'{"#" * level} {text}\n\n'
-            elif child.name in ['div', 'section']:
+            elif child.name in ['div', 'section', 'span']:
                 div_content = self._process_div_or_section(child)
                 if div_content:
                     result += div_content
-        
+            else:
+                # 其他元素递归处理
+                result += self._process_inline_elements(child)
         return result
     
     def download_image(self, img_url, index=None):
@@ -431,7 +457,15 @@ class WeChatArticleDownloader:
             else:
                 filename = f"{safe_title}.docx"
             file_path = os.path.join(self.save_dir, filename)
-            pypandoc.convert_text(markdown_content, 'docx', format='md', outputfile=file_path)
+            # 指定图片资源路径
+            images_path = os.path.abspath(os.path.join(self.save_dir, "..", "images"))
+            pypandoc.convert_text(
+                markdown_content,
+                'docx',
+                format='md',
+                outputfile=file_path,
+                extra_args=[f'--resource-path={images_path}']
+            )
             self.logger.info(f"[已保存]：{file_path}")
             return file_path
         except Exception as e:
@@ -453,6 +487,170 @@ class WeChatArticleDownloader:
         except Exception as e:
             self.logger.error(f"保存pdf文件失败: {str(e)}")
             return None
+    
+    def save_to_docx_with_python_docx(self, title, html_content):
+        """修复图片重复插入问题，保证每张图片只插入一次"""
+        from docx import Document
+        from docx.shared import Inches, Pt
+        from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        safe_title = self._clean_filename(title)
+        if self.current_publish_time:
+            filename = f"{self.current_publish_time}-{safe_title}.docx"
+        else:
+            filename = f"{safe_title}.docx"
+        file_path = os.path.join(self.save_dir, filename)
+        doc = Document()
+        doc.add_heading(title, level=1)
+        soup = BeautifulSoup(html_content, 'html.parser')
+        content = soup.find('div', id='js_content')
+        if not content:
+            content = soup.find('div', class_='rich_media_content')
+        if not content:
+            content = soup.find('div', class_='js_underline_content')
+        if not content:
+            content = soup
+        
+        # 收集已下载图片（使用实际文件名模式匹配）
+        img_files = []
+        # 尝试多种可能的文件名模式
+        patterns = [
+            f"{self.current_publish_time}-{self.current_article_title}_",
+            f"{self.current_publish_time}-{safe_title}_",
+            f"{self.current_publish_time}-",
+        ]
+        
+        self.logger.info(f"images_dir 中的所有文件: {os.listdir(self.images_dir)}")
+        
+        for pattern in patterns:
+            pattern_clean = re.sub(r'[<>:"/\\|?*]', '_', pattern)
+            self.logger.info(f"尝试匹配模式: {pattern_clean}")
+            
+            for fname in sorted(os.listdir(self.images_dir)):
+                if fname.startswith(pattern_clean) and fname.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+                    img_path = os.path.join(self.images_dir, fname)
+                    if img_path not in img_files:  # 避免重复
+                        img_files.append(img_path)
+                        self.logger.info(f"找到图片: {fname}")
+            
+            if img_files:  # 如果找到了图片就停止尝试其他模式
+                break
+        
+        self.logger.info(f"共找到 {len(img_files)} 张图片")
+        img_index = 0
+        
+        def get_full_text(elem):
+            # 递归获取所有子节点文本
+            if isinstance(elem, str):
+                return elem.strip()
+            text = ''
+            for child in elem.children:
+                text += get_full_text(child)
+            return text
+        
+        def add_hyperlink(paragraph, url, text):
+            # 通过字段代码插入超链接
+            try:
+                part = paragraph.part
+                r_id = part.relate_to(url, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink', is_external=True)
+                hyperlink = OxmlElement('w:hyperlink')
+                hyperlink.set(qn('r:id'), r_id)
+                new_run = OxmlElement('w:r')
+                rPr = OxmlElement('w:rPr')
+                # 超链接样式
+                rStyle = OxmlElement('w:rStyle')
+                rStyle.set(qn('w:val'), 'Hyperlink')
+                rPr.append(rStyle)
+                new_run.append(rPr)
+                t = OxmlElement('w:t')
+                t.text = text
+                new_run.append(t)
+                hyperlink.append(new_run)
+                paragraph._p.append(hyperlink)
+                self.logger.info(f"成功插入超链接: {text} -> {url}")
+            except Exception as e:
+                self.logger.error(f"插入超链接失败: {text} -> {url}, 错误: {e}")
+                # 如果超链接插入失败，至少插入文本
+                paragraph.add_run(text)
+        
+        def add_element(elem, parent_paragraph=None):
+            nonlocal img_index
+            if elem is None:
+                return
+            
+            # 优先处理链接标签
+            if elem.name == 'a':
+                url = elem.get('href', '')
+                link_text = get_full_text(elem)
+                self.logger.info(f"发现链接: 文本='{link_text}', URL='{url}'")
+                if parent_paragraph and url and link_text:
+                    add_hyperlink(parent_paragraph, url, link_text)
+                elif parent_paragraph and link_text:
+                    parent_paragraph.add_run(link_text)
+                return
+            if isinstance(elem, str):
+                text = elem.strip()
+                if text:
+                    if parent_paragraph:
+                        parent_paragraph.add_run(text)
+                    else:
+                        p = doc.add_paragraph(text)
+                        p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+            elif elem.name == 'img':
+                if img_index < len(img_files):
+                    try:
+                        self.logger.info(f"插入图片 {img_index + 1}: {img_files[img_index]}")
+                        doc.add_picture(img_files[img_index], width=Inches(4))
+                        img_index += 1
+                    except Exception as e:
+                        self.logger.error(f"插入图片失败: {img_files[img_index]}, {e}")
+                        img_index += 1
+                else:
+                    self.logger.warning(f"图片索引 {img_index} 超出范围，共有 {len(img_files)} 张图片")
+            elif elem.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                text = elem.get_text(strip=True)
+                if text:
+                    level = int(elem.name[1]) if elem.name[1].isdigit() else 2
+                    doc.add_heading(text, level=level)
+            elif elem.name == 'p':
+                p = doc.add_paragraph()
+                p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                for child in elem.children:
+                    add_element(child, parent_paragraph=p)
+            elif elem.name == 'br':
+                if parent_paragraph:
+                    parent_paragraph.add_run('\n')
+            elif elem.name in ['strong', 'b', 'em', 'i', 'span', 'div', 'section']:
+                # 递归处理所有子元素，优先查找链接
+                for child in elem.children:
+                    add_element(child, parent_paragraph=parent_paragraph)
+            elif elem.name == 'hr':
+                doc.add_paragraph('------------------------')
+            elif elem.name in ['ul', 'ol']:
+                for li in elem.find_all('li', recursive=False):
+                    # 对列表项也要递归处理，可能包含链接
+                    li_p = doc.add_paragraph(style='List Bullet' if elem.name=='ul' else 'List Number')
+                    li_p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                    for li_child in li.children:
+                        add_element(li_child, parent_paragraph=li_p)
+            elif elem.name == 'blockquote':
+                p = doc.add_paragraph()
+                p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                p.style.font.italic = True
+                # 递归处理引用内容，可能包含链接
+                for child in elem.children:
+                    add_element(child, parent_paragraph=p)
+            else:
+                # 对于其他未知元素，也要递归处理
+                for child in elem.children:
+                    add_element(child, parent_paragraph=parent_paragraph)
+        for elem in content.children:
+            add_element(elem)
+        
+        doc.save(file_path)
+        self.logger.info(f"[已保存]：{file_path}，插入了 {img_index} 张图片")
+        return file_path
 
 
 class ArticleDownloadManager:
@@ -595,3 +793,26 @@ class ArticleDownloadManager:
         except Exception as e:
             print(f"创建压缩包失败: {str(e)}")
             return None
+        
+if __name__ == "__main__":
+    # 测试入口
+    # 输入公众号文章链接
+    article_url = input("请输入微信公众号文章链接: ").strip()
+    # 选择保存格式
+    print("请选择保存格式：1-Markdown  2-Word(docx)  3-PDF")
+    fmt_choice = input("输入数字选择格式: ").strip()
+    fmt_map = {'1': 'md', '2': 'docx', '3': 'pdf'}
+    file_format = fmt_map.get(fmt_choice, 'md')
+
+    # 可选：输入公众号名称（用于保存路径分组）
+    account_name = input("请输入公众号名称（可选，直接回车跳过）: ").strip() or None
+
+    # 创建下载器实例
+    downloader = WeChatArticleDownloader(save_dir="downloads")
+
+    # 下载文章
+    success, file_path = downloader.download_article(article_url, file_format=file_format, account_name=account_name)
+    if success:
+        print(f"文章已成功保存到: {file_path}")
+    else:
+        print("下载失败，请检查链接或网络。")

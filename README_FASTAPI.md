@@ -1516,3 +1516,567 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkaWpPN1AwZlRuYWlFUmxwSm1qUnJRIiw
 │                                                                                                                      │
 │ 要不要我继续优化“列表返回头像 URL”这一点，或者帮你把会话存储替换成 Redis？                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 已新增本地测试脚本 script/cookie_manage_test.py，专门用于验证以下接口：                                              │
+│                                                                                                                      │
+│  • GET /cookie/list                                                                                                  │
+│  • POST /cookie/change                                                                                               │
+│  • POST /cookie/delete                                                                                               │
+│                                                                                                                      │
+│ 脚本功能与流程                                                                                                       │
+│                                                                                                                      │
+│  • 登录/注册（如 MAKE_ADMIN=True，会将该用户设为 admin，便于本地测试）                                               │
+│  • 列出当前账号下所有有效 cookies，并展示 token、is_current、name                                                    │
+│  • 交互式输入序号，切换当前使用的 cookie                                                                             │
+│  • 交互式输入序号，删除指定 cookie（包含本地文件夹删除）                                                             │
+│  • 操作后再次调用 /cookie/list 验证结果                                                                              │
+│                                                                                                                      │
+│ 使用方法                                                                                                             │
+│                                                                                                                      │
+│  1 启动后端                                                                                                          │
+│                                                                                                                      │
+│  • uvicorn app.main:app --reload                                                                                     │
+│                                                                                                                      │
+│  2 至少先成功登录一次生成 cookie（推荐生成2条以便测试“切换”）                                                        │
+│                                                                                                                      │
+│  • python script/cookie_login_test.py                                                                                │
+│                                                                                                                      │
+│  3 运行管理脚本                                                                                                      │
+│                                                                                                                      │
+│  • python script/cookie_manage_test.py                                                                               │
+│  • 按提示进行：                                                                                                      │
+│     • 输入要“切换”的序号（回车可跳过）                                                                               │
+│     • 输入要“删除”的序号（回车可跳过），删除操作需要输入 YES 确认                                                    │
+│                                                                                                                      │
+│ 脚本配置 在脚本顶部可修改/通过环境变量覆盖：                                                                         │
+│                                                                                                                      │
+│  • BASE_URL: 默认 http://localhost:8000                                                                              │
+│  • EMAIL、PASSWORD: 测试账号                                                                                         │
+│  • DB_PATH: 默认 ./app.db                                                                                            │
+│  • MAKE_ADMIN: True 时将当前用户设为 admin（本地测试方便）                                                           │
+│                                                                                                                      │
+│ 排查与提示                                                                                                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 如果 /cookie/list 为空：请先用 script/cookie_login_test.py 登录并扫码至少一次。                                   │
+│  • 如果切换失败：确认目标 token 属于当前账号，并且处于有效期内。                                                     │
+│  • 如果删除失败：查看服务端日志是否有文件权限问题；删除成功会同时移除 static/cookies// 文件夹和 DB 记录。            │
+│                                                                                                                      │
+│ 要不要我把两个脚本（登录与管理）打包为一个更完整的“一键演示”脚本，或者为你生成一份 Postman 集合以便非交互式执行？    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+下面我们来开发公众号搜索功能：1. 公众号搜索的接口入口为：/gzhaccount, 其中包含有：/gzhaccount/search 账号搜索， /gzhaccount/list 账号文章列表获取 2. 公众号搜索的功能使用允许管理员及普通用户登录状态+激活有效状态。 3. script\web_wechat_searcher.py 公众号搜索的功能实现参考这个脚本 4. 公众号搜索的结果保存在两张数据表，分别是mp_accounts 公众号搜索账号表 以及 mp_articles 公众号文章表 5. 公众号搜索账号表mp_accounts的表头包含： id:uuid, name:账号名称 唯一键, biz:唯一键, description: 账号描述, category_id:分类 外键 关联categories表的id, owner_email:搜索该账号的用户id 外键 关联accounts.email,  create_time:创建时间, update_time:更新时间, avatar_url:账号头像的url地址, avatar: 账号头像下载到本地的路径, article_account: 文章数量 6. 公众号文章表mp_articles的表头包含: id:uuid, title:文章标题, url:文章链接 唯一键, cover_url:封面链接, publish_date:发布时间, item_show_type:文章类型, mp_account:外键 mp_accounts.name 关联公众号账号表的名称 7. /gzhaccount/search全量搜索运行逻辑：搜索需要加载cookie，cookie需要选择当前账号选定的cookie，发起搜索账号请求需要输入账号名称和需要搜索的文章的数量，文章数量默认为0，代表全量搜索，文章数量不等于0，大于0的数字，即表示搜索对应数量的文章，先发起公众号搜索，如果账号搜索成功，存在公众号名称和搜索账号名称一致，则继续调用/gzhaccount/list，然后进行当前公众号的历史文章列表的获取，每请求一页，查询该页文章链接在数据库中是否存在，如果不存在，就写入数据库，然后返回该页的文章列表信息，直到搜索完期望搜索的文章的总数。 8. /gzhaccount/search 增量搜索运行逻辑：搜索需要加载cookie，cookie需要选择当前账号选定的cookie，账号正常是能够搜索到的，因为数据库中存在账号信息，直接调用/gzhaccount/list，如果返回的文章列表和本地数据库表mp_articles查询对比，如果发现数据库中不存在，那么就将不存在的写入数据库，如果发现数据库中已经存在了，那么就不要再请求微信的接口，直接从本地数据库获取数据即可
+
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 好的，我已经开始为“公众号搜索功能”搭建后端结构，并参考了你提供的 script/web_wechat_searcher.py                       │
+│ 的实现模式。当前完成内容与使用说明如下。                                                                             │
+│                                                                                                                      │
+│ 已实现的功能与代码位置                                                                                               │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 数据模型（新建三张表，满足你的字段要求）                                                                          │
+│     • categories（分类表，预留给 mp_accounts.category_id 使用）                                                      │
+│        • app/models/category.py                                                                                      │
+│     • mp_accounts（公众号账号表）                                                                                    │
+│        • app/models/mp_account.py                                                                                    │
+│        • 字段：id, name(唯一), biz(唯一), description, category_id(FK), owner_email(FK accounts.email), create_time, │
+│          update_time, avatar_url, avatar, article_account                                                            │
+│     • mp_articles（公众号文章表）                                                                                    │
+│        • app/models/mp_article.py                                                                                    │
+│        • 字段：id, title, url(唯一), cover_url, publish_date, item_show_type, mp_account(FK mp_accounts.name),       │
+│          create_time                                                                                                 │
+│     • 在 app/db/base.py 已注册 Category, MpAccount, MpArticle，服务启动会自动建表（或用 Alembic 迁移）。             │
+│  • Schemas                                                                                                           │
+│     • app/schemas/gzhaccount.py                                                                                      │
+│     • 包含：GzhSearchRequest、GzhSearchResponse、MpAccountOut、MpArticleOut、GzhListRequest、GzhListResponse         │
+│  • Service（核心抓取逻辑）                                                                                           │
+│     • app/services/gzhaccount.py                                                                                     │
+│     • 使用当前用户 is_current 的 cookie（来自 cookies 表与本地 static/cookies//gzhcookies.cookie）初始化             │
+│       requests.Session                                                                                               │
+│     • search_account(owner_email, name, max_articles):                                                               │
+│        • 调用微信搜索接口 search_biz 来搜账号（参考 web_wechat_searcher.py）                                         │
+│        • 命中后下载头像到 static/mp_accounts//avatar.ext，写入 mp_accounts                                           │
+│        • 获取文章列表：通过 appmsgpublish?sub=list&... 接口按页获取文章                                              │
+│        • 全量：max_articles=0 时不停翻页，直到无更多（或达到总数）                                                   │
+│        • 限量：max_articles>0 时，累计到达到目标数量或无更多                                                         │
+│        • 新文章写入 mp_articles（去重基于 url）；更新 mp_accounts.article_account                                    │
+│     • list_articles(owner_email, name, offset, limit)                                                                │
+│        • 简化版：从 DB 直接分页读取该账号的文章（可按需扩展增量差异对比后才远程拉取）                                │
+│  • API 路由                                                                                                          │
+│     • app/api/v1/routes/gzhaccount.py                                                                                │
+│     • /gzhaccount/search：POST，body：{ name, max_articles }                                                         │
+│        • 权限：登录 + 激活（管理员/普通用户均可）                                                                    │
+│        • 使用当前 is_current cookie 自动搜索并入库，返回账号与本次新增文章                                           │
+│     • /gzhaccount/list：GET，query：name, offset, limit                                                              │
+│        • 权限：登录 + 激活                                                                                           │
+│        • 从 DB 分页返回文章列表（后续可扩展“增量策略”：先检查远端第一页差异再合并）                                  │
+│                                                                                                                      │
+│ 当前约束与说明                                                                                                       │
+│                                                                                                                      │
+│  • 初版的增量逻辑：service.list_articles 现在是直接从本地 DB 读取；按照你的第8点需求（增量搜索），可进一步扩展如下： │
+│     • 如果本地找到了账号，则先调用 _fetch_articles_page(fakeid, begin=0) 获取最新一页，与 DB mp_articles 比较；      │
+│     • 若出现未入库的新文章，则写入 DB（增量），否则直接使用 DB 数据，避免继续请求微信接口；                          │
+│     • 我可以在下一步为 /gzhaccount/list 加上一个 use_incremental=true 的参数来触发这个行为，或者在                   │
+│       /gzhaccount/search 增量模式下自动使用。                                                                        │
+│  • 头像保存路径：static/mp_accounts/<安全化后的name>/avatar.ext，并把 avatar 字段写入 DB。avatar_url 存原图          │
+│    URL（HTTP 会转为 HTTPS）。                                                                                        │
+│  • cookies 使用：从 cookies 表取 is_current 为 True 的 cookie，当作当前用户搜索时的 cookie。若没有或已过期会抛错。   │
+│  • static 已在 app/main.py 挂载为 /static。                                                                          │
+│                                                                                                                      │
+│ 如何测试 前置：需要已有一个 is_current 的 cookie                                                                     │
+│                                                                                                                      │
+│  • 使用 cookie 登录脚本生成：python script/cookie_login_test.py                                                      │
+│     • 若你之前已经登录成功，并通过 /cookie/change 切换好当前 cookie，可以直接继续。                                  │
+│                                                                                                                      │
+│  1 搜索账号并抓取文章（全量或部分）                                                                                  │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 全量：抓到尽可能多 curl -X POST "http://localhost:8000/gzhaccount/search"                                         │
+│    -H "Authorization: Bearer "                                                                                       │
+│    -H "Content-Type: application/json"                                                                               │
+│    -d '{"name":"要搜的公众号名称","max_articles":0}'                                                                 │
+│  • 限量：抓取 10 篇 curl -X POST "http://localhost:8000/gzhaccount/search"                                           │
+│    -H "Authorization: Bearer "                                                                                       │
+│    -H "Content-Type: application/json"                                                                               │
+│    -d '{"name":"要搜的公众号名称","max_articles":10}'                                                                │
+│                                                                                                                      │
+│  2 查看文章列表（从 DB 分页）                                                                                        │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • curl -G "http://localhost:8000/gzhaccount/list"                                                                   │
+│    -H "Authorization: Bearer "                                                                                       │
+│    --data-urlencode "name=要搜的公众号名称"                                                                          │
+│    --data-urlencode "offset=0"                                                                                       │
+│    --data-urlencode "limit=20"                                                                                       │
+│                                                                                                                      │
+│ 建议的下一步                                                                                                         │
+│                                                                                                                      │
+│  • 完成第8点“增量搜索”的逻辑绑定：当账号已存在时，优先从远端拉取最新一页，与 DB                                      │
+│    比对，发现重复就不再继续请求，仅使用本地 DB；若发现新文章则写入后返回。这样 list 接口就具有“自动增量”的能力。     │
+│  • 增加 mp_accounts.biz 的使用：biz 的值现在对应 fakeid，可用于后续更稳定的关联（如果名称变更时也能匹配）。          │
+│  • 将 avatar 字段在返回时生成可访问                                                                                  │
+│    URL（/static/mp_accounts/<safe_name>/avatar.ext），便于前端直接显示。我可以在返回层做转换。                       │
+│                                                                                                                      │
+│ 我可以继续为你：                                                                                                     │
+│                                                                                                                      │
+│  • 实现 /gzhaccount/list 的“自动增量拉取”能力，严格按你第8点的策略。                                                 │
+│  • 写一个测试脚本 script/gzhaccount_test.py：自动调用 /gzhaccount/search 和                                          │
+│    /gzhaccount/list，保存结果，便于你一键验证。                                                                      │
+│  • 将这些改动汇总成一个 Pull Request。 你希望我先实现“list 的增量逻辑”，还是先写测试脚本方便你尽快验证？             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 已根据你的要求修正了 item_show_type 的解析与存储，确保当 item_show_type 为 0 时不会被当成“空值”丢失，而是正确保存为  │
+│ 0。并补充了类型语义：                                                                                                │
+│                                                                                                                      │
+│ 修正点                                                                                                               │
+│                                                                                                                      │
+│  • 抓取解析（app/services/gzhaccount.py）                                                                            │
+│     • 在 _fetch_articles_page 中解析文章时，显式取 item_show_type_raw =                                              │
+│       art.get('item_show_type')，并直接写入返回字典：                                                                │
+│        • 'item_show_type': item_show_type_raw if item_show_type_raw is not None else None                            │
+│     • 在 _persist_articles 写库前严格转换为整数：                                                                    │
+│        • ist = a.get('item_show_type')                                                                               │
+│        • ist_int = int(ist) if ist 是 int；若 ist 是 str 且是纯数字则转 int；否则 None                               │
+│        • 存库时 item_show_type=ist_int，确保 0/8/11 等值被保留为整数（0=文章，8=图文，11=转载）                      │
+│  • 模型字段类型（app/models/mp_article.py）                                                                          │
+│     • 将 item_show_type 列的类型从“字符串”改为“整数型（可空）”，使其语义正确：                                       │
+│        • item_show_type: Mapped[int | None] = mapped_column(String(32), nullable=True)                               │
+│     • 注意：为了不破坏已有表结构，建议通过迁移调整列类型（SQLite 可能需要重建列；PostgreSQL 可 ALTER                 │
+│       TYPE）。当前代码里仍然使用 String(32) 的列定义但将模型类型标注为 int | None，以保证 orm                        │
+│       使用时的语义正确。若你希望我追加 Alembic 迁移把列类型真实改为整数类型，我可以一起补上。                        │
+│                                                                                                                      │
+│ 类型定义说明                                                                                                         │
+│                                                                                                                      │
+│  • 你提到的语义：                                                                                                    │
+│     • item_show_type = 0 表示 文章                                                                                   │
+│     • item_show_type = 8 表示 图文                                                                                   │
+│     • item_show_type = 11 表示 转载                                                                                  │
+│  • 我已确保当它为 0 时不会被“or 0”这种写法吞掉。                                                                     │
+│                                                                                                                      │
+│ 你现在可以这样验证                                                                                                   │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 重新跑 /gzhaccount/search 抓取文章：                                                                              │
+│     • python script/gzhaccount_test.py                                                                               │
+│  • 然后看 gzh__search.json 以及数据库中的 mp_articles 表：                                                           │
+│     • 新抓到的文章 item_show_type 应该保留为 0/8/11 等原值                                                           │
+│  • 使用 /gzhaccount/list 返回时，item_show_type 字段会保持保存到 DB 的整数值（若你的 schema                          │
+│    期望返回字符串，我也可以在 Schema 层做类型转换）                                                                  │
+│                                                                                                                      │
+│ 需要我继续：                                                                                                         │
+│                                                                                                                      │
+│  • 增加一个“类型说明”字段（content_type）在返回中（文章/图文/转载）？                                                │
+│  • 编写 Alembic 迁移，把 mp_articles.item_show_type 列真实改成 Integer 类型？                                        │
+│  • 在 /gzhaccount/list 内置“增量搜索”逻辑（若第一页与 DB 无差异，则直接用 DB，避免继续请求）？                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> 我希望你修改/gzhaccount/search这个搜索数量的逻辑如下：1.
+当用户搜索一个公众号时，并设置了一个搜索文章的数量为n，当本地数据库中不存在的时候，先做一次完整的搜索，将完整的历史文章列
+表保存到本地数据库，然后再返回用户要求的数量n，返回的数据按照发布时间又近到远的顺序； 2.
+当用户搜索一个公众号发现数据库中已经存在该账号，那么就进行增量搜索，每访问一页，获取的结果和数据库进行对比，如果数据库中
+不存在，就插入数据库，如果数据库中存在，就停止搜索，然后返回用户要求的数量，返回的数据按照发布时间又近到远的顺序。
+按照这个逻辑，刚才的问题就解决了。
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 状态更新：我已经实现了你描述的两段式搜索逻辑，并将其落地到服务层的 search_account 方法中。下面是变更内容与行为说明。 │
+│                                                                                                                      │
+│ 改动点                                                                                                               │
+│                                                                                                                      │
+│  • 文件：app/services/gzhaccount.py                                                                                  │
+│  • 方法：GzhAccountService.search_account                                                                            │
+│  • 核心逻辑变化：                                                                                                    │
+│     1 首次搜索（数据库还没有该公众号）                                                                               │
+│        • 先全量抓取公众号所有历史文章并全部入库；                                                                    │
+│        • 返回时不再只返回“本次新增”，而是直接从数据库按发布时间（publish_date）从近到远取前 n 条（n<=0 表示全量）。  │
+│     2 增量搜索（数据库已有该公众号）                                                                                 │
+│        • 从第 1 页起按新到旧遍历；                                                                                   │
+│        • 逐条与数据库比对：遇到第一条“已存在”的文章即停止继续翻页（认为已到达历史重叠处），将本页（在遇到已存在之前  │
+│          ）的新文章入库；                                                                                            │
+│        • 返回从数据库按发布时间从近到远的前 n 条（n<=0 表示全量）。                                                  │
+│  • 返回的数据变化：                                                                                                  │
+│     • 以前：/gzhaccount/search 仅返回“本次新增入库”的文章列表；                                                      │
+│     • 现在：/gzhaccount/search 返回“当前数据库中的前 n 条文章”，更符合“我想要 n 篇”的用户预期。                      │
+│                                                                                                                      │
+│ 关键实现细节                                                                                                         │
+│                                                                                                                      │
+│  • 首次搜索                                                                                                          │
+│     • while 翻页抓取直到没有更多（或 total_count 覆盖完），每页使用 _persist_articles 去重入库。                     │
+│     • 全部入库后，按 publish_date DESC, create_time DESC 排序，从数据库取前 n 条返回。                               │
+│  • 增量搜索                                                                                                          │
+│     • 逐页处理，逐条与数据库比对，遇到第一条已存在则停止，并提交已收集的新文章。                                     │
+│     • 停止后，同样从数据库按 publish_date DESC, create_time DESC 取前 n 条返回。                                     │
+│  • 排序字段                                                                                                          │
+│     • publish_date 为 ISO 时间字符串（UTC），可以进行字典序 DESC 排序以满足从近到远的时间顺序。                      │
+│     • create_time 作为次排序，以应对 publish_date 为 None 的条目。                                                   │
+│                                                                                                                      │
+│ 与原实现的差异与好处                                                                                                 │
+│                                                                                                                      │
+│  • 解决了“已有80篇，本次请求 n=200/300 时能否先返回已有，再补全”的体验问题：                                         │
+│     • 现在 /gzhaccount/search 会直接返回数据库中按时间排序的前 n                                                     │
+│       条（已有的也会返回），并且在此之前已按首次/增量策略保证数据库同步到最新或根据边界停止。                        │
+│  • 对前端的影响：                                                                                                    │
+│     • 不再需要“先 /list 再 /search”的两步编排。一次 /search 即能得到所需数量的最新文章列表。                         │
+│                                                                                                                      │
+│ 可能的性能和体验注意                                                                                                 │
+│                                                                                                                      │
+│  • 首次全量抓取会等待较久（例如历史 500 篇），因为需要抓全量后再响应。如果担心响应时长，可以考虑：                   │
+│     • 增加一个异步模式（BackgroundTasks/Celery），先返回本地已有，再后台补全，前端轮询 /list 获取更多。              │
+│  • 增量抓取遇到“第一条已存在”就停止，极端情况下如果远端页面有“乱序”或“不同渠道重复刊发”的情况，可能会导致早停。若遇  │
+│    到这种问题，可调整为“本页处理完后若检测到已存在则停止”，或者允许连续多条已存在才停止。                            │
+│                                                                                                                      │
+│ 回归测试建议                                                                                                         │
+│                                                                                                                      │
+│  • 新账号首次搜索：返回的列表应等于数据库最新的 n 条（如 n=20）。                                                    │
+│  • 旧账号增量搜索：当第一页就全是已存在，应立刻返回数据库中最新的 n 条，且不再请求下一页。                           │
+│  • n=0：应返回数据库中全部文章，按时间从近到远。                                                                     │
+│  • 兼容性：/gzhaccount/list 行为不变，仍是纯 DB 分页。                                                               │
+│                                                                                                                      │
+│ 是否需要帮助进一步推进                                                                                               │
+│                                                                                                                      │
+│  • 我可以帮你：                                                                                                      │
+│     • 创建一条 Pull Request，将此次改动提交到一个新分支，并写好变更说明（破坏性行为：/search                         │
+│       的返回不再仅包含新增）。                                                                                       │
+│     • 在 Confluence 记录“搜索逻辑调整”的设计与行为差异文档，便于团队同步。                                           │
+│     • 创建 Jira 任务跟踪后续改进（例如可选异步补抓模式、增量边界更鲁棒策略、抓取页大小可配置化）。                   │
+│                                                                                                                      │
+│ 你希望我接下来：                                                                                                     │
+│                                                                                                                      │
+│  • 创建 PR 并补充变更说明？                                                                                          │
+│  • 在 Confluence 产出设计说明页？                                                                                    │
+│  • 创建两个 Jira 任务来跟踪“异步模式 + 增量边界策略”的后续优化？                                                     │
+│  • 或者先跑一轮手工冒烟（我可提供最小脚本）来验证几个典型场景？                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+>
+首次全量搜索的时候，用户搜索一个数据库中不存在的账号，假如账号的文章数量少，那么等待的时长就比较短，如果账号的历史文章数
+量多，请求页数多，那么用户等待返回的时长就会很长，如何才能够优化这个搜索的时间，或者能否做到每请求1页，就返回一次文章的列
+表，这样用户知道当前仍然处于请求过程，而不是卡死状态
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 状态更新：我已经为你的“缩短等待时间、边抓边回传”的诉求做了代码改造，并保留了原有同步接口以保证兼容。                 │
+│                                                                                                                      │
+│ 已做的改动（核心要点）                                                                                               │
+│                                                                                                                      │
+│  • 保留                                                                                                              │
+│    /gzhaccount/search（同步）：按你之前要求的“首次全量、再次增量”的策略执行，最终一次性返回数据库中按发布时间从近到  │
+│    远的前 n 条。                                                                                                     │
+│  • 新增                                                                                                              │
+│    /gzhaccount/search/stream（流式）：每抓取完一页就向客户端推送一次数据，直到完成为止。这样用户能看到持续的进度反馈 │
+│    ，而不是长时间等待“卡住”。                                                                                        │
+│                                                                                                                      │
+│ /gzhaccount/search/stream 的使用方式                                                                                 │
+│                                                                                                                      │
+│  • 请求：POST /gzhaccount/search/stream，Body 与 /gzhaccount/search 相同                                             │
+│     • { "name": "公众号名称", "max_articles": 200 }                                                                  │
+│  • 返回：NDJSON 流（application/x-ndjson），每行一个 JSON 事件对象                                                   │
+│  • 事件类型：                                                                                                        │
+│     • type=account：返回账号信息（第一次事件）                                                                       │
+│     • type=page：返回“本次处理完这一页之后”的进度快照：                                                              │
+│        • page：页号（从1开始）                                                                                       │
+│        • new_added：本页新增入库数量                                                                                 │
+│        • total_db：当前数据库中该账号文章总数                                                                        │
+│        • items：此刻数据库中按发布时间从近到远的前 n 条（n<=0 表示全量，建议给 n 以避免过大数组）                    │
+│        • has_more：是否还有更多页要抓                                                                                │
+│     • type=done：抓取完成时返回最终快照：total_db、items（同样按发布时间到远），以及 account                         │
+│     • type=error：异常时的错误消息                                                                                   │
+│                                                                                                                      │
+│ 客户端接入示例                                                                                                       │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • curl                                                                                                              │
+│     • curl -N -X POST "http://host/gzhaccount/search/stream" -H "Content-Type: application/json" -H "Authorization:  │
+│       Bearer " -d '{"name":"某公众号","max_articles":200}'                                                           │
+│     • 每行一条 JSON，持续输出。-N 确保不缓冲输出。                                                                   │
+│  • 浏览器/前端（Fetch + ReadableStream）                                                                             │
+│     • 用 fetch 读取 body 的流，按行切分（NDJSON），每行 JSON.parse 后增量渲染                                        │
+│  • Python（requests）                                                                                                │
+│     • with requests.post(url, json=payload, stream=True) as r: for line in r.iter_lines(decode_unicode=True): if     │
+│       line: json.loads(line)                                                                                         │
+│                                                                                                                      │
+│ 首次全量和增量抓取的流式行为                                                                                         │
+│                                                                                                                      │
+│  • 首次全量（库中无该账号）：                                                                                        │
+│     • 从第1页开始，抓到一页就入库、发一个 page 事件，items 字段就是“此刻数据库里按时间从近到远的前 n                 │
+│       条”，用户会看到列表逐步丰富。                                                                                  │
+│     • 最终发一个 done 事件。                                                                                         │
+│  • 增量抓取（库中已有该账号）：                                                                                      │
+│     • 同样逐页，但当在某一页遇到“第一条已存在”的文章时即停止（认为到达历史边界），发出 page 事件，然后发 done 事件。 │
+│                                                                                                                      │
+│ 部署与运行注意                                                                                                       │
+│                                                                                                                      │
+│  • 反向代理缓冲：如果你的服务部署在 Nginx/Cloudflare                                                                 │
+│    等后面，可能默认会缓冲响应。需要关闭或绕开缓冲，才能让流式内容实时到达客户端。                                    │
+│     • Nginx: proxy_buffering off; proxy_read_timeout 600s; 等。                                                      │
+│  • Uvicorn/Gunicorn：默认支持流式响应，但超时需要适当调大（例如 keep-alive、worker 超时）。                          │
+│  • Content-Type：application/x-ndjson（已设置）。                                                                    │
+│                                                                                                                      │
+│ 为什么这样能解决“等待太久像卡死”的问题                                                                               │
+│                                                                                                                      │
+│  • 同步接口在首次全量的确会等待较久（历史多页）；新增的流式接口可以“每页即推”，用户立即看到最新的前 n                │
+│    条文章在不断更新，并且通过 has_more 知道还在进行。                                                                │
+│  • 对你最初场景（已有80篇，本次要200/300）：                                                                         │
+│     • 增量模式会很快在第一页遇到已存在文章并停止，然后流式接口立即返回 page + done，前端马上就能得到按时间排序的前 n │
+│       条，而不是等待全量。                                                                                           │
+│                                                                                                                      │
+│ 可选的进一步优化                                                                                                     │
+│                                                                                                                      │
+│  • Server-Sent Events（SSE）                                                                                         │
+│     • 如果前端偏好 EventSource（text/event-stream），可以快速提供一个 /gzhaccount/search/sse 接口，封装相同事件。    │
+│  • 后台任务版本（异步补抓，接口立即返回）                                                                            │
+│     • 在 /gzhaccount/list 上加 refresh_async + target_total 参数：先返回当前 DB                                      │
+│       分页结果，并在后台继续抓取，前端只用轮询 /list 即可。                                                          │
+│  • 抓取定位优化（减少重复扫描）                                                                                      │
+│     • 给 MpAccount 记 last_begin/last_fetch_time，增量抓取时从上次边界附近开始，跳过重复页，并设置“连续 K            │
+│       页无新增则停止”的策略。                                                                                        │
+│                                                                                                                      │
+│ 下一步我可以帮你                                                                                                     │
+│                                                                                                                      │
+│  • 创建一个 PR，包含：                                                                                               │
+│     • search 逻辑修改（首次全量 + 增量停止边界）                                                                     │
+│     • 新的 /gzhaccount/search/stream 接口                                                                            │
+│     • 简短的接口文档与使用说明                                                                                       │
+│  • 在 Confluence 写一页“搜索优化与流式接口”的设计说明，含接入示例和部署指引                                          │
+│  • 创建 Jira 任务跟踪后续优化项（SSE 支持、后台补抓模式、抓取定位优化）                                              │
+│                                                                                                                      │
+│ 你希望我现在：                                                                                                       │
+│                                                                                                                      │
+│  1 直接创建 PR 并附上使用说明？                                                                                      │
+│  2 先在 Confluence 落一页文档给团队评审？                                                                            │
+│  3 帮你创建两个 Jira 任务来跟踪“异步补抓 + 抓取定位优化”？                                                           │
+│  4 或者继续把 SSE 版本也实现上？                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+下面新增对搜索的公众号表mp_accounts以及公众号对应的文章表mp_articles的删查改接口，分别为/gzhaccount/delete、/gzhaccount/change、/gzhaccount/show； /gzharticle/delete、/gzharticle/change、/gzharticle/show 。 主要功能和要求如下： 1. 使用权限为：管理员和普通用户具有登录权限且处于激活有效期内， 管理员可以查询全部的数据， 普通用户只能查询归属人是自己的账号和文章。 2. 增加接口统一由公众号搜索接口负责写入，这里不做增加接口 3.删除接口通过id值或者唯一键进行删除， 删除公众号账号时，同时会删除对应公众号账号的文章 4. 修改接口不可修改id和唯一键，其他表头可以修改 5.  查询接口，对于管理员用户，可以查询全部数据， 对于普通用户具有登录权限且处于激活有效期的，可以查询归属人是自己的账号和文章
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 状态更新：我已经实现了你要求的删查改接口，包含 gzhaccount 和 gzharticle 两个资源的                                   │
+│ show/change/delete，且按你的权限规则做了严格控制。                                                                   │
+│                                                                                                                      │
+│ 新增的接口                                                                                                           │
+│                                                                                                                      │
+│  • 公众号账号表 mp_accounts（路径前缀 /gzhaccount）                                                                  │
+│     • POST /gzhaccount/show                                                                                          │
+│     • POST /gzhaccount/change                                                                                        │
+│     • POST /gzhaccount/delete                                                                                        │
+│  • 公众号文章表 mp_articles（路径前缀 /gzharticle）                                                                  │
+│     • POST /gzharticle/show                                                                                          │
+│     • POST /gzharticle/change                                                                                        │
+│     • POST /gzharticle/delete                                                                                        │
+│                                                                                                                      │
+│ 主要实现位置                                                                                                         │
+│                                                                                                                      │
+│  • 账号接口：app/api/v1/routes/gzhaccount_admin_ops.py                                                               │
+│  • 文章接口：app/api/v1/routes/gzharticle.py                                                                         │
+│  • 引入到应用：app/main.py 已 include_router                                                                         │
+│  • 请求模型：                                                                                                        │
+│     • 账号：app/schemas/gzhaccount_admin_ops.py                                                                      │
+│     • 文章：app/schemas/gzharticle.py（使用 MpArticleOut 返回）                                                      │
+│                                                                                                                      │
+│ 权限与行为规则（逐条对应你的要求）                                                                                   │
+│                                                                                                                      │
+│  1 权限与可见性                                                                                                      │
+│                                                                                                                      │
+│  • 登录且激活有效期内方可访问（沿用 require_active_user 依赖）。                                                     │
+│  • 管理员：                                                                                                          │
+│     • 可查询/修改/删除任意账号与文章。                                                                               │
+│  • 普通用户：                                                                                                        │
+│     • 仅能操作归属人为自己的账号与文章：                                                                             │
+│        • 账号归属：MpAccount.owner_email 必须是当前用户                                                              │
+│        • 文章归属：通过文章的 mp_account 找到账号，再检查 MpAccount.owner_email                                      │
+│                                                                                                                      │
+│  2 不提供新增接口                                                                                                    │
+│                                                                                                                      │
+│  • 与你的要求一致：新增由 /gzhaccount/search 完成，删查改仅在这里实现。                                              │
+│                                                                                                                      │
+│  3 删除接口                                                                                                          │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 账号删除（/gzhaccount/delete）：                                                                                  │
+│     • 支持 id/name/biz 三种选择器（二者或三者之一）                                                                  │
+│     • 删除账号前，先删除该账号名下的所有文章，再删除账号本身                                                         │
+│  • 文章删除（/gzharticle/delete）：                                                                                  │
+│     • 支持 id/url 二选一                                                                                             │
+│  • 返回形如：{"status":"ok", "deleted":""}。未找到则 404。                                                           │
+│                                                                                                                      │
+│  4 修改接口                                                                                                          │
+│                                                                                                                      │
+│  • 账号修改（/gzhaccount/change）：                                                                                  │
+│     • 定位字段：id 或 name 或 biz（三选一）                                                                          │
+│     • 不可修改：id/name/biz（唯一键）；可修改：description、category_id、avatar_url、avatar                          │
+│     • 仅管理员可修改 owner_email（可选）                                                                             │
+│  • 文章修改（/gzharticle/change）：                                                                                  │
+│     • 定位字段：id 或 url                                                                                            │
+│     • 不可修改：id/url（唯一）                                                                                       │
+│     • 可修改：title、cover_url、publish_date、item_show_type、mp_account                                             │
+│     • 修改 mp_account 时：                                                                                           │
+│        • 需要目标账号存在                                                                                            │
+│        • 非管理员禁止移动到不属于自己的账号名下                                                                      │
+│  • 成功返回修改后的记录（MpAccountOut / MpArticleOut）                                                               │
+│                                                                                                                      │
+│  5 查询接口（show）                                                                                                  │
+│                                                                                                                      │
+│  • 账号 show：                                                                                                       │
+│     • 定位字段：id 或 name 或 biz                                                                                    │
+│     • 管理员可读任意，普通用户只能读自己的                                                                           │
+│  • 文章 show：                                                                                                       │
+│     • 定位字段：id 或 url                                                                                            │
+│     • 管理员可读任意，普通用户只能读属于自己账号的文章                                                               │
+│                                                                                                                      │
+│ 接口请求示例                                                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│  • 查询账号                                                                                                          │
+│     • POST /gzhaccount/show                                                                                          │
+│     • Body: {"name":"哥飞"}                                                                                          │
+│  • 修改账号（非唯一字段）                                                                                            │
+│     • POST /gzhaccount/change                                                                                        │
+│     • Body: {"name":"哥飞","description":"新的描述"} 仅管理员可改 owner_email                                        │
+│  • 删除账号（会级联删除文章）                                                                                        │
+│     • POST /gzhaccount/delete                                                                                        │
+│     • Body: {"biz":"MjM5OTIzMzYyMA=="}                                                                               │
+│  • 查询文章                                                                                                          │
+│     • POST /gzharticle/show                                                                                          │
+│     • Body: {"url":"https://mp.weixin.qq.com/s/..."}                                                                 │
+│  • 修改文章（不可改 id/url）                                                                                         │
+│     • POST /gzharticle/change                                                                                        │
+│     • Body: {"url":"https://mp.weixin.qq.com/s/...","title":"新标题","item_show_type":11}                            │
+│  • 删除文章                                                                                                          │
+│     • POST /gzharticle/delete                                                                                        │
+│     • Body: {"id":""}                                                                                                │
+│                                                                                                                      │
+│ 实现细节要点                                                                                                         │
+│                                                                                                                      │
+│  • 账号选择器与权限校验：                                                                                            │
+│     • _account_selector_stmt + _enforce_account_access（仅管理员或 owner 通过）                                      │
+│  • 文章选择器与权限校验：                                                                                            │
+│     • _article_selector_stmt + _enforce_article_access（检查文章所属账号的 owner_email）                             │
+│  • 账号删除时先删文章再删账号，确保无残留                                                                            │
+│  • 修改时仅清理 None 值，保证仅更新传入字段                                                                          │
+│  • 返回模型使用 MpAccountOut 与 MpArticleOut                                                                         │
+│                                                                                                                      │
+│ 潜在增强建议                                                                                                         │
+│                                                                                                                      │
+│  • 在 /gzhaccount/delete 中，将批量删除文章改为 SQLAlchemy 2.0 风格的 delete(MpArticle).where(...)，目前使用了       │
+│    session.query(...).delete()，可用但建议后续统一风格。                                                             │
+│  • 可追加批量 show（列表查询）接口，支持分页；现阶段按你的要求仅做 show（单条）。                                    │
+│                                                                                                                      │
+│ 要我继续为这些接口：                                                                                                 │
+│                                                                                                                      │
+│  • 创建 PR 并附带简单的使用文档？                                                                                    │
+│  • 在 Confluence 写一页“gzhaccount/gzharticle 删查改接口说明与权限矩阵”？                                            │
+│  • 创建两个 Jira 任务来跟踪“列表分页接口补充”和“SQLAlchemy 2.0 风格统一改造”？                                       │
+│                                                                                                                      │
+│ 你希望我下一步做哪一项：创建 PR / 写文档 / 建任务，还是先做一个最小化的自动化测试脚本帮你快速验证这六个接口？        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+追加批量show（列表查询）接口，支持分页
+
+╭─ Response ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 我已经为 mp_accounts 与 mp_articles 追加了“批量 show（列表查询）”接口，并支持分页与权限控制。下面是整体说明与用法。  │
+│                                                                                                                      │
+│ 新增的列表接口                                                                                                       │
+│                                                                                                                      │
+│  • 账号列表                                                                                                          │
+│     • 路径: POST /gzhaccount/list                                                                                    │
+│     • 请求体 AccountListQuery:                                                                                       │
+│        • 过滤: name（精确）、biz（精确）                                                                             │
+│        • owner_email: 管理员可传；普通用户忽略，自动限定为当前用户                                                   │
+│        • 分页: offset（默认0）、limit（默认20，最大100）                                                             │
+│     • 返回体 AccountListResponse:                                                                                    │
+│        • items: MpAccountOut[]                                                                                       │
+│        • total, offset, limit                                                                                        │
+│     • 权限: 管理员可看全部；普通用户只能看自己 owner_email 的账户                                                    │
+│  • 文章列表                                                                                                          │
+│     • 路径: POST /gzharticle/list                                                                                    │
+│     • 请求体 ArticleListQuery:                                                                                       │
+│        • 过滤: mp_account（精确）、url（精确）、title_contains（标题模糊）                                           │
+│        • owner_email: 管理员可传；普通用户忽略，自动限定为自己                                                       │
+│        • 分页: offset（默认0）、limit（默认20，最大100）                                                             │
+│     • 返回体 ArticleListResponse:                                                                                    │
+│        • items: MpArticleOut[]（按 publish_date DESC, create_time DESC 排序）                                        │
+│        • total, offset, limit                                                                                        │
+│     • 权限: 管理员可看全部；普通用户只看自己账号下的文章                                                             │
+│                                                                                                                      │
+│ 代码位置                                                                                                             │
+│                                                                                                                      │
+│  • Schemas                                                                                                           │
+│     • app/schemas/gzhaccount_list.py（AccountListQuery/Response、ArticleListQuery/Response）                         │
+│  • 路由                                                                                                              │
+│     • 账号列表: app/api/v1/routes/gzhaccount_admin_ops.py -> gzh_account_list                                        │
+│     • 文章列表: app/api/v1/routes/gzharticle.py -> gzh_article_list                                                  │
+│  • app/main.py 已 include_router                                                                                     │
+│                                                                                                                      │
+│ 简要示例                                                                                                             │
+│                                                                                                                      │
+│  • 列出账号（管理员看全部，普通用户看自有）                                                                          │
+│     • POST /gzhaccount/list                                                                                          │
+│     • Body: {"name":"哥飞", "offset":0, "limit":20}                                                                  │
+│  • 列出文章（管理员按 owner_email 看指定用户的；普通用户自动限制为自己）                                             │
+│     • POST /gzharticle/list                                                                                          │
+│     • Body: {"mp_account":"哥飞", "title_contains":"牙疼", "offset":0, "limit":20}                                   │
+│  • 管理员按用户筛文章                                                                                                │
+│     • POST /gzharticle/list                                                                                          │
+│     • Body: {"owner_email":"someone@example.com", "offset":0, "limit":50}                                            │
+│                                                                                                                      │
+│ 注意与约束                                                                                                           │
+│                                                                                                                      │
+│  • 所有接口均需登录且激活有效期内（沿用 require_active_user）                                                        │
+│  • 新增仍由 /gzhaccount/search 负责，这里只提供 show/change/delete/list                                              │
+│  • 删除账号时会级联删除该账号名下文章                                                                                │
+│  • 修改接口不允许修改 id 和唯一键（账号的 name/biz、文章的 url 无法改），其他字段可改；账号 owner_email 仅管理员可改 │
+│                                                                                                                      │
+│ 是否需要我：                                                                                                         │
+│                                                                                                                      │
+│  • 创建 PR，并附带接口文档与 Postman/HTTPie 示例？                                                                   │
+│  • 写一页 Confluence 文档（接口说明、权限矩阵、示例）？                                                              │
+│  • 创建 Jira 任务跟踪后续优化（比如支持更多筛选项、SQLAlchemy 2.0 统一风格）？                                       │
+│                                                                                                                      │
+│ 你更希望我先做哪一个：创建 PR / 写文档 / 建任务，还是再补一个最小化的测试脚本，帮你快速验证两个列表接口？            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
